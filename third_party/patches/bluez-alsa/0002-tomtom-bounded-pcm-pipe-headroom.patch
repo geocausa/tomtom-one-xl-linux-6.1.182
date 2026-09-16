@@ -1,0 +1,25 @@
+--- a/src/bluealsa-dbus.c
++++ b/src/bluealsa-dbus.c
+@@ -461,6 +461,22 @@
+ 		goto fail;
+ 	}
+ 
++	/* TomTom ONE XL has very little CPU headroom. bluealsa-aplay can spend
++	 * roughly 40 ms blocked in a normal ALSA write while this decoder keeps
++	 * producing PCM.  Ensure the non-blocking handoff PIPE has enough short-
++	 * term scheduling headroom without creating a seconds-long audio queue. */
++	int pipe_size_before = fcntl(pcm_fds[0], F_GETPIPE_SZ);
++	int pipe_size_after = pipe_size_before;
++	if (pipe_size_before > 0 && pipe_size_before < 32768) {
++		int rv = fcntl(pcm_fds[0], F_SETPIPE_SZ, 32768);
++		if (rv != -1)
++			pipe_size_after = rv;
++		else
++			warn("TomTom PCM PIPE resize failed: %s", strerror(errno));
++	}
++	warn("TomTom PCM PIPE capacity: before=%d after=%d bytes",
++			pipe_size_before, pipe_size_after);
++
+ 	/* set our internal endpoint as non-blocking. */
+ 	if (fcntl(pcm_fds[is_sink ? 0 : 1], F_SETFL, O_NONBLOCK) == -1) {
+ 		g_dbus_method_invocation_return_error(inv, G_DBUS_ERROR,
