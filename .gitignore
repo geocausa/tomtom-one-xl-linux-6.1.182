@@ -1,0 +1,12 @@
+/out/
+*.o
+*.a
+*.so
+*.so.*
+*.arm
+*.elf
+*.exe
+*.img
+*.cpio
+*.zImage
+*.ttsystem

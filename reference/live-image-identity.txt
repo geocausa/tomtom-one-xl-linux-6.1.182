@@ -1,0 +1,2 @@
+device_active=e9236602117ce69221be77da82abddaba595dcecafbd6efed4811eb5dcbcf3f5
+local_modern8=e9236602117ce69221be77da82abddaba595dcecafbd6efed4811eb5dcbcf3f5

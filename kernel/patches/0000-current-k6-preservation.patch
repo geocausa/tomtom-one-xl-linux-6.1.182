@@ -1,0 +1,2710 @@
+--- a/arch/arm/boot/compressed/head.S
++++ b/arch/arm/boot/compressed/head.S
+@@ -223,11 +223,9 @@
+ 1:
+  ARM_BE8(	setend	be		)	@ go BE8 if compiled for BE8
+  AR_CLASS(	mrs	r9, cpsr	)
+-#ifdef CONFIG_ARM_VIRT_EXT
+-		bl	__hyp_stub_install	@ get into SVC mode, reversibly
+-#endif
+-		mov	r7, r1			@ save architecture ID
+-		mov	r8, r2			@ save atags pointer
++		/* Force TomTom GO machine type (605) and ATAGs offset */
++		ldr	r7, =605		@ MACH_TYPE_TOMTOMGO (605)
++		ldr	r8, =0x30000000		@ TomTom boot params base in SDRAM
+ 
+ #ifndef CONFIG_CPU_V7M
+ 		/*
+@@ -246,6 +244,22 @@
+ 		msr	spsr_cxsf, r9		@ Save the CPU boot mode in
+ 						@ SPSR
+ #endif
++
++		/* Clear entire framebuffer to clean black immediately upon boot */
++		ldr	r0, =0x4d000014		@ S3C2410_LCDSADDR1
++		ldr	r0, [r0]
++		mov	r0, r0, lsl #1		@ Framebuffer base in RAM
++		cmp	r0, #0x30000000
++		blo	.Lskip_clear
++		cmp	r0, #0x33000000
++		bhi	.Lskip_clear
++		mov	r2, #0			@ Black (0x00000000)
++		ldr	r3, =261120		@ Entire 480x272 16bpp screen
++.Lclear_loop:
++		str	r2, [r0], #4
++		subs	r3, r3, #4
++		bne	.Lclear_loop
++.Lskip_clear:
+ 		/*
+ 		 * Note that some cache flushing and other stuff may
+ 		 * be needed here - is there an Angel SWI call for this?
+--- a/arch/arm/boot/compressed/misc.c
++++ b/arch/arm/boot/compressed/misc.c
+@@ -141,6 +141,37 @@
+ {
+ 	int ret;
+ 
++	/* The TomTom bootloader leaves its framebuffer at 0x30080000, right
++	 * where the kernel decompresses. Move the LCD scan address to the
++	 * top of RAM so (a) decompression can't be disturbed and (b) the
++	 * kernel's early screen console writes somewhere harmless.
++	 * MMU is off here - direct physical access is fine. */
++	{
++		volatile unsigned *lcd = (volatile unsigned *)0x4d000000;
++		unsigned saddr1 = lcd[5];               /* LCDSADDR1 0x14 */
++		unsigned saddr2 = lcd[6];               /* LCDSADDR2 0x18 */
++		unsigned con1   = lcd[0];               /* LCDCON1  0x00 */
++		unsigned fb     = saddr1 << 1;          /* mode bits [31:30] are 0 here */
++		unsigned fbend  = (saddr2 & 0x1fffff) << 1;
++		unsigned size   = (fbend > fb && fbend > 0x30000000 &&
++				   fbend < 0x32000000) ? (fbend - fb)
++						       : (480 * 272 * 2);
++		unsigned newfb  = 0x31f80000;
++		volatile unsigned short *p;
++		int i;
++
++		if (fb >= 0x30000000 && fb < 0x32000000) {
++			/* The LCD DMA only latches new addresses while ENVID=0 */
++			lcd[0] = con1 & ~1u;
++			lcd[5] = (saddr1 & 0xc0000000) | (newfb >> 1);
++			lcd[6] = (saddr2 & 0xffe00000) | (((newfb + size) >> 1) & 0x1fffff);
++			lcd[0] = con1 | 1u;
++			p = (unsigned short *)newfb;
++			for (i = 0; i < 480 * 272; i++)
++				p[i] = 0xf800; /* red: decompressor reached */
++		}
++	}
++
+ 	output_data		= (unsigned char *)output_start;
+ 	free_mem_ptr		= free_mem_ptr_p;
+ 	free_mem_end_ptr	= free_mem_ptr_end_p;
+--- a/arch/arm/kernel/atags_parse.c
++++ b/arch/arm/kernel/atags_parse.c
+@@ -197,7 +197,7 @@
+ 
+ 	if (atags_vaddr)
+ 		tags = atags_vaddr;
+-	else if (mdesc->atag_offset)
++	else
+ 		tags = (void *)(PAGE_OFFSET + mdesc->atag_offset);
+ 
+ #if defined(CONFIG_DEPRECATED_PARAM_STRUCT)
+--- a/arch/arm/kernel/head-common.S
++++ b/arch/arm/kernel/head-common.S
+@@ -206,6 +206,7 @@
+ ENDPROC(__error_lpae)
+ 
+ __error_p:
++
+ #ifdef CONFIG_DEBUG_LL
+ 	adr	r0, str_p1
+ 	bl	printascii
+@@ -217,23 +218,17 @@
+ str_p1:	.asciz	"\nError: unrecognized/unsupported processor variant (0x"
+ str_p2:	.asciz	").\n"
+ 	.align
++#else
++	b	__error
+ #endif
+ ENDPROC(__error_p)
+ 
+ __error:
+-#ifdef CONFIG_ARCH_RPC
+-/*
+- * Turn the screen red on a error - RiscPC only.
+- */
+-	mov	r0, #0x02000000
+-	mov	r3, #0x11
+-	orr	r3, r3, r3, lsl #8
+-	orr	r3, r3, r3, lsl #16
+-	str	r3, [r0], #4
+-	str	r3, [r0], #4
+-	str	r3, [r0], #4
+-	str	r3, [r0], #4
+-#endif
+ 1:	mov	r0, r0
+ 	b	1b
+ ENDPROC(__error)
++
++	.data
++	.globl	tomtom_fb_phys
++tomtom_fb_phys:
++	.long	0
+--- a/arch/arm/kernel/head.S
++++ b/arch/arm/kernel/head.S
+@@ -104,6 +104,30 @@
+ 	@ ensure svc mode and all interrupts masked
+ 	safe_svcmode_maskall r9
+ 
++	/* Force machine ID 605 (MACH_TYPE_TOMTOMGO) */
++	ldr	r1, =605
++
++	/* Store framebuffer address */
++	ldr	r3, =0x4d000014		@ S3C2410_LCDSADDR1
++	ldr	r3, [r3]
++	mov	r3, r3, lsl #1
++	adr_l	r0, tomtom_fb_phys
++	str	r3, [r0]
++
++	/* STAGE MARKER: paint screen BLUE - proves real kernel entry reached */
++	ldr	r2, =0x30000000
++	cmp	r3, r2
++	blo	9997f
++	ldr	r2, =0x32000000
++	cmp	r3, r2
++	bhs	9997f
++	ldr	r4, =0x001f		@ blue
++	ldr	r2, =130560		@ 480*272
++9996:	strh	r4, [r3], #2
++	subs	r2, r2, #1
++	bne	9996b
++9997:
++
+ 	mrc	p15, 0, r9, c0, c0		@ get processor id
+ 	bl	__lookup_processor_type		@ r5=procinfo r9=cpuid
+ 	movs	r10, r5				@ invalid processor (r5=0)?
+--- a/arch/arm/kernel/setup.c
++++ b/arch/arm/kernel/setup.c
+@@ -1101,14 +1101,20 @@
+ 		atags_vaddr = FDT_VIRT_BASE(__atags_pointer);
+ 
+ 	setup_processor();
++
+ 	if (atags_vaddr) {
+ 		mdesc = setup_machine_fdt(atags_vaddr);
+ 		if (mdesc)
+ 			memblock_reserve(__atags_pointer,
+ 					 fdt_totalsize(atags_vaddr));
+ 	}
++
++	if (!__machine_arch_type || __machine_arch_type != 605)
++		__machine_arch_type = 605;
++
+ 	if (!mdesc)
+ 		mdesc = setup_machine_tags(atags_vaddr, __machine_arch_type);
++
+ 	if (!mdesc) {
+ 		early_print("\nError: invalid dtb and unrecognized/unsupported machine ID\n");
+ 		early_print("  r1=0x%08x, r2=0x%08x\n", __machine_arch_type,
+@@ -1118,6 +1124,7 @@
+ 		dump_machine_table();
+ 	}
+ 
++
+ 	machine_desc = mdesc;
+ 	machine_name = mdesc->name;
+ 	dump_stack_set_arch_desc("%s", mdesc->name);
+--- a/arch/arm/mach-s3c/Kconfig
++++ b/arch/arm/mach-s3c/Kconfig
+@@ -71,7 +71,7 @@
+ 
+ config S3C_ADC
+ 	bool "ADC common driver support"
+-	depends on !ARCH_MULTIPLATFORM
++	depends on ARCH_S3C24XX
+ 	help
+ 	  Core support for the ADC block found in the Samsung SoC systems
+ 	  for drivers such as the touchscreen and hwmon to use to share
+--- a/arch/arm/mach-s3c/Kconfig.s3c24xx
++++ b/arch/arm/mach-s3c/Kconfig.s3c24xx
+@@ -365,6 +365,17 @@
+ 	help
+ 	  Say Y here if you are using an VSTMS board
+ 
++config MACH_TOMTOMGO
++	bool "TomTom GO / ONE / ONE XL"
++	select S3C_DEV_FB
++	select S3C_DEV_NAND
++	select S3C_DEV_WDT
++	select SAMSUNG_DEV_ADC
++	select SAMSUNG_DEV_TS
++	select SAMSUNG_DEV_PWM
++	help
++	  Say Y here if you are using a TomTom GO, ONE, or ONE XL device.
++
+ endif # CPU_S3C2412
+ 
+ if CPU_S3C2416
+--- a/arch/arm/mach-s3c/Makefile.s3c24xx
++++ b/arch/arm/mach-s3c/Makefile.s3c24xx
+@@ -64,6 +64,7 @@
+ obj-$(CONFIG_MACH_JIVE)			+= mach-jive.o
+ obj-$(CONFIG_MACH_SMDK2413)		+= mach-smdk2413.o
+ obj-$(CONFIG_MACH_VSTMS)		+= mach-vstms.o
++obj-$(CONFIG_MACH_TOMTOMGO)		+= mach-tomtomgo.o
+ 
+ obj-$(CONFIG_MACH_SMDK2416)		+= mach-smdk2416.o
+ obj-$(CONFIG_MACH_S3C2416_DT)		+= mach-s3c2416-dt.o
+--- a/arch/arm/mach-s3c/devs.c
++++ b/arch/arm/mach-s3c/devs.c
+@@ -105,7 +105,7 @@
+ };
+ #endif /* CONFIG_PLAT_S3C24XX */
+ 
+-#if defined(CONFIG_SAMSUNG_DEV_ADC)
++#if defined(CONFIG_SAMSUNG_DEV_ADC) && !defined(CONFIG_PLAT_S3C24XX)
+ static struct resource s3c_adc_resource[] = {
+ 	[0] = DEFINE_RES_MEM(SAMSUNG_PA_ADC, SZ_256),
+ 	[1] = DEFINE_RES_IRQ(IRQ_ADC),
+@@ -820,7 +820,7 @@
+ };
+ #endif /* CONFIG_PLAT_S3C24XX */
+ 
+-#ifdef CONFIG_S3C_DEV_RTC
++#if defined(CONFIG_S3C_DEV_RTC) && !defined(CONFIG_PLAT_S3C24XX)
+ static struct resource s3c_rtc_resource[] = {
+ 	[0] = DEFINE_RES_MEM(S3C_PA_RTC, SZ_256),
+ 	[1] = DEFINE_RES_IRQ(IRQ_RTC_ALARM),
+--- a/arch/arm/mach-s3c/gpio-cfg-helpers.h
++++ b/arch/arm/mach-s3c/gpio-cfg-helpers.h
+@@ -35,6 +35,8 @@
+ static inline int samsung_gpio_do_setpull(struct samsung_gpio_chip *chip,
+ 					  unsigned int off, samsung_gpio_pull_t pull)
+ {
++	if (!chip || !chip->config || !chip->config->set_pull)
++		return 0;
+ 	return (chip->config->set_pull)(chip, off, pull);
+ }
+ 
+--- a/arch/arm/mach-s3c/irq-s3c24xx.c
++++ b/arch/arm/mach-s3c/irq-s3c24xx.c
+@@ -217,17 +217,17 @@
+ 
+ 	if ((data->hwirq >= 4) && (data->hwirq <= 7)) {
+ 		gpcon_reg = S3C2410_GPFCON;
+-		extint_reg = S3C24XX_EXTINT0;
++		extint_reg = soc_is_s3c2412() ? S3C2410_GPIOREG(0x98) : S3C24XX_EXTINT0;
+ 		gpcon_offset = (data->hwirq) * 2;
+ 		extint_offset = (data->hwirq) * 4;
+ 	} else if ((data->hwirq >= 8) && (data->hwirq <= 15)) {
+ 		gpcon_reg = S3C2410_GPGCON;
+-		extint_reg = S3C24XX_EXTINT1;
++		extint_reg = soc_is_s3c2412() ? S3C2410_GPIOREG(0x9c) : S3C24XX_EXTINT1;
+ 		gpcon_offset = (data->hwirq - 8) * 2;
+ 		extint_offset = (data->hwirq - 8) * 4;
+ 	} else if ((data->hwirq >= 16) && (data->hwirq <= 23)) {
+ 		gpcon_reg = S3C2410_GPGCON;
+-		extint_reg = S3C24XX_EXTINT2;
++		extint_reg = soc_is_s3c2412() ? S3C2410_GPIOREG(0xa0) : S3C24XX_EXTINT2;
+ 		gpcon_offset = (data->hwirq - 8) * 2;
+ 		extint_offset = (data->hwirq - 16) * 4;
+ 	} else {
+@@ -246,7 +246,7 @@
+ 
+ 	if (data->hwirq <= 3) {
+ 		gpcon_reg = S3C2410_GPFCON;
+-		extint_reg = S3C24XX_EXTINT0;
++		extint_reg = soc_is_s3c2412() ? S3C2410_GPIOREG(0x98) : S3C24XX_EXTINT0;
+ 		gpcon_offset = (data->hwirq) * 2;
+ 		extint_offset = (data->hwirq) * 4;
+ 	} else {
+@@ -321,6 +321,10 @@
+ 		generic_handle_domain_irq(sub_intc->domain, offset + n);
+ 	}
+ 
++	/* Clear parent pending latch in SRCPND/INTPND now that sub-pending bits are handled */
++	if (chip->irq_ack)
++		chip->irq_ack(&desc->irq_data);
++
+ 	chained_irq_exit(chip, desc);
+ }
+ 
+@@ -516,6 +520,10 @@
+ 	unsigned long last;
+ 	int i;
+ 
++	/* Mask all interrupts in this controller initially */
++	if (intc->reg_mask)
++		writel_relaxed(0xffffffff, intc->reg_mask);
++
+ 	/* if intpnd is set, read the next pending irq from there */
+ 	reg_source = intc->reg_intpnd ? intc->reg_intpnd : intc->reg_pending;
+ 
+@@ -587,8 +595,13 @@
+ 		pr_debug("irq: found eintc\n");
+ 		base = (void *)0xfd000000;
+ 
+-		intc->reg_mask = base + 0xa4;
+-		intc->reg_pending = base + 0xa8;
++		if (soc_is_s3c2412()) {
++			intc->reg_mask = base + 0xb4;
++			intc->reg_pending = base + 0xb8;
++		} else {
++			intc->reg_mask = base + 0xa4;
++			intc->reg_pending = base + 0xa8;
++		}
+ 		irq_num = 24;
+ 		irq_start = S3C2410_IRQ(32);
+ 		break;
+--- a/arch/arm/mach-s3c/irqs-s3c24xx.h
++++ b/arch/arm/mach-s3c/irqs-s3c24xx.h
+@@ -117,7 +117,7 @@
+ #define IRQ_S3C2412_SDI		S3C2410_IRQSUB(13)
+ #define IRQ_S3C2412_CF		S3C2410_IRQSUB(14)
+ 
+-#define NR_IRQS_S3C2412		(S3C2410_IRQSUB(14) + 1)
++#define NR_IRQS_S3C2412		(S3C2410_IRQSUB(28) + 1)
+ 
+ #define IRQ_S3C2416_EINT8t15	S3C2410_IRQ(5)
+ #define IRQ_S3C2416_DMA		S3C2410_IRQ(17)
+--- a/arch/arm/mach-s3c/s3c24xx.c
++++ b/arch/arm/mach-s3c/s3c24xx.c
+@@ -104,16 +104,8 @@
+ 		.name		= name_s3c2442b
+ 	},
+ 	{
+-		.idcode		= 0x32412001,
+-		.idmask		= 0xffffffff,
+-		.map_io		= s3c2412_map_io,
+-		.init_uarts	= s3c2412_init_uarts,
+-		.init		= s3c2412_init,
+-		.name		= name_s3c2412,
+-	},
+-	{			/* a newer version of the s3c2412 */
+-		.idcode		= 0x32412003,
+-		.idmask		= 0xffffffff,
++		.idcode		= 0x32412000,
++		.idmask		= 0xfffff000,
+ 		.map_io		= s3c2412_map_io,
+ 		.init_uarts	= s3c2412_init_uarts,
+ 		.init		= s3c2412_init,
+--- a/arch/arm/mach-s3c/sleep-s3c2412.S
++++ b/arch/arm/mach-s3c/sleep-s3c2412.S
+@@ -51,3 +51,52 @@
+ 	bne	s3c2412_sleep_enter1
+ 
+ 	ret	lr
++
++#include "regs-clock.h"
++#include "s3c2412.h"
++
++/*
++ * S3C2412 hardware software reset sequence matching TomTom 2.6 GPL sleep.S.
++ * Per Samsung errata, SYSCLK must be sourced from EXTCLK before SWRST.
++ * We must flush caches, adjust SDRAM refresh for slow clock, switch CLKSRC,
++ * invalidate TLB and caches, pre-fetch instructions into L1 cache,
++ * disable MMU, and write 0x533c2412 directly to physical address 0x4C000030.
++ */
++	.global	s3c2412_cpu_reboot
++
++ENTRY(s3c2412_cpu_reboot)
++	bl	arm926_flush_kern_cache_all
++
++	@ change SDRAM refresh rate for slow clock
++	ldr	r5, =S3C2412_REFRESH
++	ldr	r4, =0x2e
++	str	r4, [ r5 ]	@ store S3C2412_REFRESH
++
++	@ enable slow clock
++	ldr	r5, =S3C2412_CLKSRC
++	ldr	r4, =0
++	str	r4, [ r5 ]	@ store S3C2412_CLKSRC
++
++	mov	r1, #0
++	mcr	p15, 0, r1, c8, c7, 0		@@ invalidate I & D TLBs
++	mcr	p15, 0, r1, c7, c7, 0		@@ invalidate I & D caches
++
++	ldr	r4, =0x4C000030
++	ldr	r7, =0x533C2412
++
++	teq	pc, #0			@ first as a trial-run to load cache
++	bl	s3c2412_do_reboot
++	teq	r0, r0			@ now do it for real
++	b	s3c2412_do_reboot	@
++
++	@@ align next bit of code to cache line
++	.align	8
++s3c2412_do_reboot:
++	mrc	p15, 0, r0, c1, c0, 0
++	bic	r0, r0, #1
++	mcreq	p15, 0, r0, c1, c0, 0
++	streq	r7, [ r4 ]
++1:	beq	1b
++	mov	pc, r14
++ENDPROC(s3c2412_cpu_reboot)
++
+--- a/arch/arm/tools/mach-types
++++ b/arch/arm/tools/mach-types
+@@ -599,3 +599,4 @@
+ remarkable		MACH_REMARKABLE		REMARKABLE		5106
+ fa0113			MACH_FA0113		FA0113			5107
+ innova_statnettawm	MACH_INNOVA_STATNETTAWM	INNOVA_STATNETTAWM	5108
++tomtomgo		MACH_TOMTOMGO		TOMTOMGO		605
+--- a/drivers/clk/samsung/clk-s3c2412.c
++++ b/drivers/clk/samsung/clk-s3c2412.c
+@@ -142,10 +142,21 @@
+ 	ALIAS(PCLK_UART2, "s3c2412-uart.2", "clk_uart_baud2"),
+ 	ALIAS(SCLK_UART, NULL, "clk_uart_baud3"),
+ 	ALIAS(PCLK_I2C, "s3c2410-i2c.0", "i2c"),
++	/* Legacy S3C2412 ASoC clkdev lookups used by s3c2412-iis. */
++	ALIAS(PCLK_I2S, "s3c2412-iis", "iis"),
++	ALIAS(SCLK_I2S, "s3c2412-iis", "i2sclk"),
+ 	ALIAS(PCLK_ADC, NULL, "adc"),
+ 	ALIAS(PCLK_RTC, NULL, "rtc"),
+ 	ALIAS(PCLK_PWM, NULL, "timers"),
++	ALIAS(PCLK_SDI, NULL, "sdi"),
+ 	ALIAS(HCLK_LCD, NULL, "lcd"),
++	/* Legacy S3C24xx DMA driver requests per-channel clocks as dma.N
++	 * from device s3c2412-dma.0, while the common clock provider names
++	 * the gates dma0..dma3.  Bridge those legacy clkdev lookups. */
++	ALIAS(HCLK_DMA0, "s3c2412-dma.0", "dma.0"),
++	ALIAS(HCLK_DMA1, "s3c2412-dma.0", "dma.1"),
++	ALIAS(HCLK_DMA2, "s3c2412-dma.0", "dma.2"),
++	ALIAS(HCLK_DMA3, "s3c2412-dma.0", "dma.3"),
+ 	ALIAS(PCLK_USBD, NULL, "usb-device"),
+ 	ALIAS(SCLK_USBD, NULL, "usb-bus-gadget"),
+ 	ALIAS(HCLK_USBH, NULL, "usb-host"),
+@@ -168,6 +179,8 @@
+ 	 * information on this fix.
+ 	 */
+ 
++	/* Set INFORM0 = 0x1 (NEUTRAL reboot) for bootloader */
++	__raw_writel(0x01, reg_base + 0x70);
+ 	__raw_writel(0x00, reg_base + CLKSRC);
+ 	__raw_writel(0x533C2412, reg_base + SWRST);
+ 	return NOTIFY_DONE;
+--- a/drivers/dma/s3c24xx-dma.c
++++ b/drivers/dma/s3c24xx-dma.c
+@@ -788,8 +788,20 @@
+ 		/*
+ 		 * Currently running, so sum over the pending sg's and
+ 		 * the currently active one.
++		 *
++		 * During stream teardown dmaengine_tx_status() may race after
++		 * terminate has detached the active descriptor/physical channel
++		 * while the cookie is still reported IN_PROGRESS.  Linux 6.1's
++		 * original code dereferenced s3cchan->at unconditionally here,
++		 * which NULL-dereferences on TomTom during snd_pcm_release().
++		 *
++		 * No active descriptor means there is no remaining hardware
++		 * residue to account for.  Return zero residue and preserve the
++		 * cookie status rather than crashing the kernel.
+ 		 */
+ 		txd = s3cchan->at;
++		if (!txd || !txd->at || !s3cchan->phy)
++			goto out_residue;
+ 
+ 		dsg = list_entry(txd->at, struct s3c24xx_sg, node);
+ 		list_for_each_entry_from(dsg, &txd->dsg_list, node)
+@@ -797,6 +809,7 @@
+ 
+ 		bytes += s3c24xx_dma_getbytes_chan(s3cchan);
+ 	}
++out_residue:
+ 	spin_unlock_irqrestore(&s3cchan->vc.lock, flags);
+ 
+ 	/*
+@@ -1290,6 +1303,29 @@
+ 	dma_cap_set(DMA_CYCLIC, s3cdma->slave.cap_mask);
+ 	dma_cap_set(DMA_PRIVATE, s3cdma->slave.cap_mask);
+ 	s3cdma->slave.dev = &pdev->dev;
++
++	/*
++	 * Advertise the slave capabilities this driver already implements.
++	 *
++	 * Without these fields dma_get_slave_caps() returns -ENXIO, causing
++	 * dmaengine PCM to fall back to snd_dmaengine_pcm_pointer_no_residue(),
++	 * which Linux documents as deprecated/unreliable.  s3c24xx_dma_tx_status()
++	 * already reports live residue from DSTAT, so expose that capability and
++	 * let ALSA use the real hardware pointer.
++	 */
++	s3cdma->slave.src_addr_widths =
++		BIT(DMA_SLAVE_BUSWIDTH_1_BYTE) |
++		BIT(DMA_SLAVE_BUSWIDTH_2_BYTES) |
++		BIT(DMA_SLAVE_BUSWIDTH_4_BYTES);
++	s3cdma->slave.dst_addr_widths =
++		BIT(DMA_SLAVE_BUSWIDTH_1_BYTE) |
++		BIT(DMA_SLAVE_BUSWIDTH_2_BYTES) |
++		BIT(DMA_SLAVE_BUSWIDTH_4_BYTES);
++	s3cdma->slave.directions =
++		BIT(DMA_MEM_TO_DEV) | BIT(DMA_DEV_TO_MEM);
++	s3cdma->slave.min_burst = 1;
++	s3cdma->slave.max_burst = 1;
++	s3cdma->slave.residue_granularity = DMA_RESIDUE_GRANULARITY_BURST;
+ 	s3cdma->slave.device_free_chan_resources =
+ 					s3c24xx_dma_free_chan_resources;
+ 	s3cdma->slave.device_tx_status = s3c24xx_dma_tx_status;
+--- a/drivers/input/touchscreen/s3c2410_ts.c
++++ b/drivers/input/touchscreen/s3c2410_ts.c
+@@ -1,13 +1,23 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ /*
+- * Samsung S3C24XX touchscreen driver
++ * Dedicated TomTom ONE XL Touchscreen Driver (Linux 6.1 LTS)
++ * Direct Register Polling implementation based on TomTom 2.6 GPL source.
+  *
+- * Copyright 2004 Arnaud Patard <arnaud.patard@rtp-net.org>
+- * Copyright 2008 Ben Dooks <ben-linux@fluff.org>
+- * Copyright 2009 Simtec Electronics <linux@simtec.co.uk>
++ * Hardware Specification (Limerick / TomTom ONE XL):
++ * - Screen plates are driven directly by S3C2412 GPIOs:
++ *     GPG12: XPON (X-plus plate drive, active high)
++ *     GPG13: XMON (X-minus plate drive, active low)
++ *     GPG14: YPON (Y-plus plate drive, active high)
++ *     GPG15: YMON / TSDOWN (Y-minus plate drive and touch pressure, active low)
++ * - ADC Reference Power:
++ *     GPA12: AIN4_PWR (must be driven HIGH to power the ADC reference rail)
++ * - Analog sense lines routed to S3C2412 ADC channels:
++ *     AIN5: TS_X position sense
++ *     AIN7: TS_Y position sense & Touch Down pressure
+  *
+- * Additional work by Herbert Pötzl <herbert@13thfloor.at> and
+- * Harald Welte <laforge@openmoko.org>
++ * Direct Register ADC Reading:
++ * - Direct register read avoids interrupt latency and waitqueue timeouts.
++ * - Hardware ADC clock explicitly enabled.
+  */
+ 
+ #include <linux/errno.h>
+@@ -15,450 +25,330 @@
+ #include <linux/module.h>
+ #include <linux/input.h>
+ #include <linux/delay.h>
+-#include <linux/interrupt.h>
+ #include <linux/platform_device.h>
+-#include <linux/clk.h>
+ #include <linux/io.h>
+-
+-#include <linux/soc/samsung/s3c-adc.h>
++#include <linux/gpio.h>
++#include <linux/kthread.h>
++#include <linux/clk.h>
+ #include <linux/platform_data/touchscreen-s3c2410.h>
+ 
+-#define	S3C2410_ADCCON			(0x00)
+-#define	S3C2410_ADCTSC			(0x04)
+-#define	S3C2410_ADCDLY			(0x08)
+-#define	S3C2410_ADCDAT0			(0x0C)
+-#define	S3C2410_ADCDAT1			(0x10)
+-#define	S3C64XX_ADCUPDN			(0x14)
+-#define	S3C2443_ADCMUX			(0x18)
+-#define	S3C64XX_ADCCLRINT		(0x18)
+-#define	S5P_ADCMUX			(0x1C)
+-#define	S3C64XX_ADCCLRINTPNDNUP		(0x20)
+-
+-/* ADCTSC Register Bits */
+-#define S3C2443_ADCTSC_UD_SEN		(1 << 8)
+-#define S3C2410_ADCTSC_YM_SEN		(1<<7)
+-#define S3C2410_ADCTSC_YP_SEN		(1<<6)
+-#define S3C2410_ADCTSC_XM_SEN		(1<<5)
+-#define S3C2410_ADCTSC_XP_SEN		(1<<4)
+-#define S3C2410_ADCTSC_PULL_UP_DISABLE	(1<<3)
+-#define S3C2410_ADCTSC_AUTO_PST		(1<<2)
+-#define S3C2410_ADCTSC_XY_PST(x)	(((x)&0x3)<<0)
+-
+-/* ADCDAT0 Bits */
+-#define S3C2410_ADCDAT0_UPDOWN		(1<<15)
+-#define S3C2410_ADCDAT0_AUTO_PST	(1<<14)
+-#define S3C2410_ADCDAT0_XY_PST		(0x3<<12)
+-#define S3C2410_ADCDAT0_XPDATA_MASK	(0x03FF)
+-
+-/* ADCDAT1 Bits */
+-#define S3C2410_ADCDAT1_UPDOWN		(1<<15)
+-#define S3C2410_ADCDAT1_AUTO_PST	(1<<14)
+-#define S3C2410_ADCDAT1_XY_PST		(0x3<<12)
+-#define S3C2410_ADCDAT1_YPDATA_MASK	(0x03FF)
+-
+-
+-#define TSC_SLEEP  (S3C2410_ADCTSC_PULL_UP_DISABLE | S3C2410_ADCTSC_XY_PST(0))
+-
+-#define INT_DOWN	(0)
+-#define INT_UP		(1 << 8)
+-
+-#define WAIT4INT	(S3C2410_ADCTSC_YM_SEN | \
+-			 S3C2410_ADCTSC_YP_SEN | \
+-			 S3C2410_ADCTSC_XP_SEN | \
+-			 S3C2410_ADCTSC_XY_PST(3))
+-
+-#define AUTOPST		(S3C2410_ADCTSC_YM_SEN | \
+-			 S3C2410_ADCTSC_YP_SEN | \
+-			 S3C2410_ADCTSC_XP_SEN | \
+-			 S3C2410_ADCTSC_AUTO_PST | \
+-			 S3C2410_ADCTSC_XY_PST(0))
+-
+-#define FEAT_PEN_IRQ	(1 << 0)	/* HAS ADCCLRINTPNDNUP */
+-
+-/* Per-touchscreen data. */
+-
+-/**
+- * struct s3c2410ts - driver touchscreen state.
+- * @client: The ADC client we registered with the core driver.
+- * @dev: The device we are bound to.
+- * @input: The input device we registered with the input subsystem.
+- * @clock: The clock for the adc.
+- * @io: Pointer to the IO base.
+- * @xp: The accumulated X position data.
+- * @yp: The accumulated Y position data.
+- * @irq_tc: The interrupt number for pen up/down interrupt
+- * @count: The number of samples collected.
+- * @shift: The log2 of the maximum count to read in one go.
+- * @features: The features supported by the TSADC MOdule.
+- */
+-struct s3c2410ts {
+-	struct s3c_adc_client *client;
+-	struct device *dev;
+-	struct input_dev *input;
+-	struct clk *clock;
+-	void __iomem *io;
+-	unsigned long xp;
+-	unsigned long yp;
+-	int irq_tc;
+-	int count;
+-	int shift;
+-	int features;
++#define S3C2410_ADCCON			0x00
++#define S3C2410_ADCTSC			0x04
++#define S3C2410_ADCDLY			0x08
++#define S3C2410_ADCDAT0			0x0C
++#define S3C2410_ADCDAT1			0x10
++
++#define S3C2410_ADCCON_ECFLG		(1 << 15)
++#define S3C2410_ADCCON_PRSCEN		(1 << 14)
++#define S3C2410_ADCCON_ENABLE_START	(1 << 0)
++
++#define S3C2410_ADCTSC_YP_SEN		(1 << 6)
++#define S3C2410_ADCTSC_XP_SEN		(1 << 4)
++#define S3C2410_ADCTSC_PULL_UP_DISABLE	(1 << 3)
++
++#define S3C2410_GPIO_A_START		0
++#define S3C2410_GPIO_G_START		192
++#define PIN_AIN4_PWR			(S3C2410_GPIO_A_START + 12)
++#define PIN_XPON			(S3C2410_GPIO_G_START + 12)
++#define PIN_XMON			(S3C2410_GPIO_G_START + 13)
++#define PIN_YPON			(S3C2410_GPIO_G_START + 14)
++#define PIN_YMON			(S3C2410_GPIO_G_START + 15)
++
++#define ADC_CH_X			5
++#define ADC_CH_Y			7
++#define ADC_CH_DOWN			7
++
++#define TS_PRESSURE_THRESHOLD		250
++
++struct tomtom_ts {
++	struct platform_device	*pdev;
++	struct input_dev	*input;
++	void __iomem		*regs;
++	struct clk		*clk;
++	struct task_struct	*thread;
+ };
+ 
+-static struct s3c2410ts ts;
+-
+-/**
+- * get_down - return the down state of the pen
+- * @data0: The data read from ADCDAT0 register.
+- * @data1: The data read from ADCDAT1 register.
+- *
+- * Return non-zero if both readings show that the pen is down.
+- */
+-static inline bool get_down(unsigned long data0, unsigned long data1)
++static void tomtom_ts_float_pins(void)
+ {
+-	/* returns true if both data values show stylus down */
+-	return (!(data0 & S3C2410_ADCDAT0_UPDOWN) &&
+-		!(data1 & S3C2410_ADCDAT0_UPDOWN));
++	gpio_direction_input(PIN_XPON);
++	gpio_direction_input(PIN_XMON);
++	gpio_direction_input(PIN_YPON);
++	gpio_direction_input(PIN_YMON);
+ }
+ 
+-static void touch_timer_fire(struct timer_list *unused)
++static int tomtom_read_adc(void __iomem *regs, int ch)
+ {
+-	unsigned long data0;
+-	unsigned long data1;
+-	bool down;
+-
+-	data0 = readl(ts.io + S3C2410_ADCDAT0);
+-	data1 = readl(ts.io + S3C2410_ADCDAT1);
+-
+-	down = get_down(data0, data1);
+-
+-	if (down) {
+-		if (ts.count == (1 << ts.shift)) {
+-			ts.xp >>= ts.shift;
+-			ts.yp >>= ts.shift;
++	u32 con;
++	int timeout;
+ 
+-			dev_dbg(ts.dev, "%s: X=%lu, Y=%lu, count=%d\n",
+-				__func__, ts.xp, ts.yp, ts.count);
++	/* Setup ADCCON: Prescaler Enable (bit 14), Prescaler Value = 49 (bits 13:6), Channel Select (bits 5:3) */
++	con = S3C2410_ADCCON_PRSCEN | (49 << 6) | ((ch & 0x7) << 3);
++	writel(con, regs + S3C2410_ADCCON);
++	udelay(10);
++
++	/* Trigger conversion by setting START bit */
++	writel(con | S3C2410_ADCCON_ENABLE_START, regs + S3C2410_ADCCON);
++
++	/* Wait for START bit to clear */
++	timeout = 500;
++	while ((readl(regs + S3C2410_ADCCON) & S3C2410_ADCCON_ENABLE_START) && --timeout)
++		udelay(2);
++
++	/* Wait for ECFLG (conversion complete) */
++	timeout = 1000;
++	while (!(readl(regs + S3C2410_ADCCON) & S3C2410_ADCCON_ECFLG) && --timeout)
++		udelay(5);
+ 
+-			input_report_abs(ts.input, ABS_X, ts.xp);
+-			input_report_abs(ts.input, ABS_Y, ts.yp);
++	if (timeout == 0)
++		return -1;
+ 
+-			input_report_key(ts.input, BTN_TOUCH, 1);
+-			input_sync(ts.input);
+-
+-			ts.xp = 0;
+-			ts.yp = 0;
+-			ts.count = 0;
+-		}
+-
+-		s3c_adc_start(ts.client, 0, 1 << ts.shift);
+-	} else {
+-		ts.xp = 0;
+-		ts.yp = 0;
+-		ts.count = 0;
+-
+-		input_report_key(ts.input, BTN_TOUCH, 0);
+-		input_sync(ts.input);
+-
+-		writel(WAIT4INT | INT_DOWN, ts.io + S3C2410_ADCTSC);
+-	}
++	return readl(regs + S3C2410_ADCDAT0) & 0x3FF;
+ }
+ 
+-static DEFINE_TIMER(touch_timer, touch_timer_fire);
+-
+-/**
+- * stylus_irq - touchscreen stylus event interrupt
+- * @irq: The interrupt number
+- * @dev_id: The device ID.
+- *
+- * Called when the IRQ_TC is fired for a pen up or down event.
+- */
+-static irqreturn_t stylus_irq(int irq, void *dev_id)
++static int tomtom_ts_thread(void *data)
+ {
+-	unsigned long data0;
+-	unsigned long data1;
+-	bool down;
+-
+-	data0 = readl(ts.io + S3C2410_ADCDAT0);
+-	data1 = readl(ts.io + S3C2410_ADCDAT1);
+-
+-	down = get_down(data0, data1);
+-
+-	/* TODO we should never get an interrupt with down set while
+-	 * the timer is running, but maybe we ought to verify that the
+-	 * timer isn't running anyways. */
+-
+-	if (down)
+-		s3c_adc_start(ts.client, 0, 1 << ts.shift);
+-	else
+-		dev_dbg(ts.dev, "%s: count=%d\n", __func__, ts.count);
+-
+-	if (ts.features & FEAT_PEN_IRQ) {
+-		/* Clear pen down/up interrupt */
+-		writel(0x0, ts.io + S3C64XX_ADCCLRINTPNDNUP);
+-	}
+-
+-	return IRQ_HANDLED;
+-}
+-
+-/**
+- * s3c24xx_ts_conversion - ADC conversion callback
+- * @client: The client that was registered with the ADC core.
+- * @data0: The reading from ADCDAT0.
+- * @data1: The reading from ADCDAT1.
+- * @left: The number of samples left.
+- *
+- * Called when a conversion has finished.
+- */
+-static void s3c24xx_ts_conversion(struct s3c_adc_client *client,
+-				  unsigned data0, unsigned data1,
+-				  unsigned *left)
+-{
+-	dev_dbg(ts.dev, "%s: %d,%d\n", __func__, data0, data1);
+-
+-	ts.xp += data0;
+-	ts.yp += data1;
+-
+-	ts.count++;
+-
+-	/* From tests, it seems that it is unlikely to get a pen-up
+-	 * event during the conversion process which means we can
+-	 * ignore any pen-up events with less than the requisite
+-	 * count done.
+-	 *
+-	 * In several thousand conversions, no pen-ups where detected
+-	 * before count completed.
+-	 */
+-}
++	struct tomtom_ts *ts = data;
++	bool was_down = false;
++	int last_x = -1, last_y = -1;
++
++	pr_info("tomtom_ts: Direct ADC sampling thread active (60Hz)\n");
++
++	while (!kthread_should_stop()) {
++		int z, raw_x = -1, raw_y = -1;
++
++		/* Step 1: Pen Down Check
++		 * For Limerick / TomTom ONE XL:
++		 * Internal pull-up on AIN7 MUST BE ENABLED (PULL_UP_DISABLE bit = 0)
++		 * Drive YMON/TSDOWN (GPG15) LOW (0V). Leave GPG12-14 floating.
++		 * When NOT touched: internal pull-up pulls AIN7 to ~1023.
++		 * When TOUCHED: pen contact pulls AIN7 to 0V (<250).
++		 */
++		writel(S3C2410_ADCTSC_XP_SEN | S3C2410_ADCTSC_YP_SEN,
++		       ts->regs + S3C2410_ADCTSC);
++
++		gpio_direction_output(PIN_YMON, 0);
++		gpio_direction_input(PIN_XPON);
++		gpio_direction_input(PIN_XMON);
++		gpio_direction_input(PIN_YPON);
++		udelay(100);
++
++		/* Read Channel 7 (AIN7) */
++		z = tomtom_read_adc(ts->regs, ADC_CH_DOWN);
++
++		if (z >= 0 && z < TS_PRESSURE_THRESHOLD) {
++			/* Screen is pressed!
++			 * Step 2: Measure X Position
++			 * For coordinate measurement: PULL-UP MUST BE DISABLED so it does not distort!
++			 * X Plane: XPON (GPG12) = 1 (3.3V), XMON (GPG13) = 0 (0V)
++			 * Y Plane: Floating (GPG14, GPG15 input)
++			 */
++			writel(S3C2410_ADCTSC_XP_SEN | S3C2410_ADCTSC_YP_SEN |
++			       S3C2410_ADCTSC_PULL_UP_DISABLE,
++			       ts->regs + S3C2410_ADCTSC);
++
++			gpio_direction_input(PIN_YMON);
++			gpio_direction_output(PIN_XPON, 1);
++			gpio_direction_output(PIN_XMON, 0);
++			udelay(150);
++
++			raw_x = tomtom_read_adc(ts->regs, ADC_CH_X);
++
++			/* Step 3: Measure Y Position
++			 * X Plane: Floating (GPG12, GPG13 input)
++			 * Y Plane: YPON (GPG14) = 1 (3.3V), YMON (GPG15) = 0 (0V)
++			 */
++			gpio_direction_input(PIN_XPON);
++			gpio_direction_input(PIN_XMON);
++			gpio_direction_output(PIN_YPON, 1);
++			gpio_direction_output(PIN_YMON, 0);
++			udelay(150);
++
++			raw_y = tomtom_read_adc(ts->regs, ADC_CH_Y);
++
++			/* Return all pins to floating */
++			tomtom_ts_float_pins();
++
++			if (raw_x > 30 && raw_y > 30 && raw_x < 990 && raw_y < 990) {
++				int diff_x = last_x >= 0 ? abs(raw_x - last_x) : 0;
++				int diff_y = last_y >= 0 ? abs(raw_y - last_y) : 0;
++
++				/* Debounce filter: require 2 consistent samples or smooth within 60 counts */
++				if (!was_down || (diff_x < 60 && diff_y < 60)) {
++					int emit_x = (last_x >= 0 && was_down) ? ((last_x + raw_x) / 2) : raw_x;
++					int emit_y = (last_y >= 0 && was_down) ? ((last_y + raw_y) / 2) : raw_y;
++
++					input_report_abs(ts->input, ABS_X, emit_x);
++					input_report_abs(ts->input, ABS_Y, emit_y);
++					input_report_abs(ts->input, ABS_PRESSURE, 1023 - z);
++					input_report_key(ts->input, BTN_TOUCH, 1);
++					input_sync(ts->input);
++					was_down = true;
++				}
++				last_x = raw_x;
++				last_y = raw_y;
++			}
++		} else {
++			tomtom_ts_float_pins();
++
++			if (was_down) {
++				input_report_key(ts->input, BTN_TOUCH, 0);
++				input_report_abs(ts->input, ABS_PRESSURE, 0);
++				input_sync(ts->input);
++				was_down = false;
++				last_x = -1;
++				last_y = -1;
++			}
++		}
+ 
+-/**
+- * s3c24xx_ts_select - ADC selection callback.
+- * @client: The client that was registered with the ADC core.
+- * @select: The reason for select.
+- *
+- * Called when the ADC core selects (or deslects) us as a client.
+- */
+-static void s3c24xx_ts_select(struct s3c_adc_client *client, unsigned select)
+-{
+-	if (select) {
+-		writel(S3C2410_ADCTSC_PULL_UP_DISABLE | AUTOPST,
+-		       ts.io + S3C2410_ADCTSC);
+-	} else {
+-		mod_timer(&touch_timer, jiffies+1);
+-		writel(WAIT4INT | INT_UP, ts.io + S3C2410_ADCTSC);
++		/* Poll rate: ~16ms for 60Hz update rate */
++		msleep(16);
+ 	}
++
++	tomtom_ts_float_pins();
++	return 0;
+ }
+ 
+-/**
+- * s3c2410ts_probe - device core probe entry point
+- * @pdev: The device we are being bound to.
+- *
+- * Initialise, find and allocate any resources we need to run and then
+- * register with the ADC and input systems.
+- */
+-static int s3c2410ts_probe(struct platform_device *pdev)
++static int tomtom_ts_probe(struct platform_device *pdev)
+ {
+-	struct s3c2410_ts_mach_info *info;
+ 	struct device *dev = &pdev->dev;
++	struct tomtom_ts *ts;
+ 	struct input_dev *input_dev;
+ 	struct resource *res;
+-	int ret = -EINVAL;
+-
+-	/* Initialise input stuff */
+-	memset(&ts, 0, sizeof(struct s3c2410ts));
+-
+-	ts.dev = dev;
++	resource_size_t start, size;
++	int ret;
+ 
+-	info = dev_get_platdata(dev);
+-	if (!info) {
+-		dev_err(dev, "no platform data, cannot attach\n");
+-		return -EINVAL;
+-	}
+-
+-	dev_dbg(dev, "initialising touchscreen\n");
++	pr_info("tomtom_ts: probing TomTom ONE XL touchscreen driver (direct ADC)\n");
+ 
+-	ts.clock = clk_get(dev, "adc");
+-	if (IS_ERR(ts.clock)) {
+-		dev_err(dev, "cannot get adc clock source\n");
+-		return -ENOENT;
+-	}
++	ts = devm_kzalloc(dev, sizeof(*ts), GFP_KERNEL);
++	if (!ts)
++		return -ENOMEM;
+ 
+-	ret = clk_prepare_enable(ts.clock);
+-	if (ret) {
+-		dev_err(dev, "Failed! to enabled clocks\n");
+-		goto err_clk_get;
+-	}
+-	dev_dbg(dev, "got and enabled clocks\n");
+-
+-	ts.irq_tc = ret = platform_get_irq(pdev, 0);
+-	if (ret < 0) {
+-		dev_err(dev, "no resource for interrupt\n");
+-		goto err_clk;
+-	}
++	ts->pdev = pdev;
+ 
++	/* Map ADC registers safely using devm_ioremap without resource reservation conflicts */
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+-	if (!res) {
+-		dev_err(dev, "no resource for registers\n");
+-		ret = -ENOENT;
+-		goto err_clk;
+-	}
+-
+-	ts.io = ioremap(res->start, resource_size(res));
+-	if (ts.io == NULL) {
+-		dev_err(dev, "cannot map registers\n");
+-		ret = -ENOMEM;
+-		goto err_clk;
+-	}
++	start = res ? res->start : 0x58000000;
++	size = res ? resource_size(res) : 0x100;
+ 
+-	/* inititalise the gpio */
+-	if (info->cfg_gpio)
+-		info->cfg_gpio(to_platform_device(ts.dev));
+-
+-	ts.client = s3c_adc_register(pdev, s3c24xx_ts_select,
+-				     s3c24xx_ts_conversion, 1);
+-	if (IS_ERR(ts.client)) {
+-		dev_err(dev, "failed to register adc client\n");
+-		ret = PTR_ERR(ts.client);
+-		goto err_iomap;
++	ts->regs = devm_ioremap(dev, start, size);
++	if (!ts->regs) {
++		dev_err(dev, "failed to ioremap adc registers\n");
++		return -ENOMEM;
++	}
++
++	/* Request and enable ADC peripheral clock */
++	ts->clk = devm_clk_get(dev, "adc");
++	if (IS_ERR(ts->clk))
++		ts->clk = devm_clk_get(NULL, "adc");
++	if (!IS_ERR(ts->clk)) {
++		ret = clk_prepare_enable(ts->clk);
++		if (ret)
++			dev_warn(dev, "failed to enable adc clock: %d\n", ret);
++		else
++			pr_info("tomtom_ts: ADC clock enabled\n");
++	} else {
++		dev_warn(dev, "could not get adc clock\n");
+ 	}
+ 
+-	/* Initialise registers */
+-	if ((info->delay & 0xffff) > 0)
+-		writel(info->delay & 0xffff, ts.io + S3C2410_ADCDLY);
++	/* Disable internal Samsung TS controller switches so ADC runs purely */
++	writel(S3C2410_ADCTSC_XP_SEN | S3C2410_ADCTSC_YP_SEN |
++	       S3C2410_ADCTSC_PULL_UP_DISABLE,
++	       ts->regs + S3C2410_ADCTSC);
++
++	/* Enable ADC reference voltage power (AIN4_PWR on GPA12) */
++	ret = devm_gpio_request(dev, PIN_AIN4_PWR, "tomtom_ts_ain4_pwr");
++	if (!ret) {
++		gpio_direction_output(PIN_AIN4_PWR, 1);
++		pr_info("tomtom_ts: AIN4_PWR (GPA12) reference voltage enabled\n");
++	}
++
++	/* Request GPIO pins */
++	ret = devm_gpio_request(dev, PIN_XPON, "tomtom_ts_xpon");
++	if (ret) dev_warn(dev, "gpio %d busy/requested\n", PIN_XPON);
++	ret = devm_gpio_request(dev, PIN_XMON, "tomtom_ts_xmon");
++	if (ret) dev_warn(dev, "gpio %d busy/requested\n", PIN_XMON);
++	ret = devm_gpio_request(dev, PIN_YPON, "tomtom_ts_ypon");
++	if (ret) dev_warn(dev, "gpio %d busy/requested\n", PIN_YPON);
++	ret = devm_gpio_request(dev, PIN_YMON, "tomtom_ts_ymon");
++	if (ret) dev_warn(dev, "gpio %d busy/requested\n", PIN_YMON);
+ 
+-	writel(WAIT4INT | INT_DOWN, ts.io + S3C2410_ADCTSC);
++	tomtom_ts_float_pins();
+ 
+-	input_dev = input_allocate_device();
++	/* Allocate and configure input device */
++	input_dev = devm_input_allocate_device(dev);
+ 	if (!input_dev) {
+-		dev_err(dev, "Unable to allocate the input device !!\n");
+-		ret = -ENOMEM;
+-		goto err_iomap;
++		dev_err(dev, "failed to allocate input device\n");
++		return -ENOMEM;
+ 	}
+ 
+-	ts.input = input_dev;
+-	ts.input->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
+-	ts.input->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
+-	input_set_abs_params(ts.input, ABS_X, 0, 0x3FF, 0, 0);
+-	input_set_abs_params(ts.input, ABS_Y, 0, 0x3FF, 0, 0);
+-
+-	ts.input->name = "S3C24XX TouchScreen";
+-	ts.input->id.bustype = BUS_HOST;
+-	ts.input->id.vendor = 0xDEAD;
+-	ts.input->id.product = 0xBEEF;
+-	ts.input->id.version = 0x0102;
+-
+-	ts.shift = info->oversampling_shift;
+-	ts.features = platform_get_device_id(pdev)->driver_data;
++	ts->input = input_dev;
++	input_dev->name = "TomTom ONE XL TouchScreen";
++	input_dev->phys = "s3c24xx/input0";
++	input_dev->id.bustype = BUS_HOST;
++	input_dev->id.vendor = 0x1399; /* TomTom */
++	input_dev->id.product = 0x0001;
++
++	input_set_capability(input_dev, EV_KEY, BTN_TOUCH);
++	input_set_abs_params(input_dev, ABS_X, 0, 1023, 0, 0);
++	input_set_abs_params(input_dev, ABS_Y, 0, 1023, 0, 0);
++	input_set_abs_params(input_dev, ABS_PRESSURE, 0, 1023, 0, 0);
+ 
+-	ret = request_irq(ts.irq_tc, stylus_irq, 0,
+-			  "s3c2410_ts_pen", ts.input);
++	ret = input_register_device(input_dev);
+ 	if (ret) {
+-		dev_err(dev, "cannot get TC interrupt\n");
+-		goto err_inputdev;
++		dev_err(dev, "failed to register input device\n");
++		return ret;
+ 	}
+ 
+-	dev_info(dev, "driver attached, registering input device\n");
++	platform_set_drvdata(pdev, ts);
+ 
+-	/* All went ok, so register to the input system */
+-	ret = input_register_device(ts.input);
+-	if (ret < 0) {
+-		dev_err(dev, "failed to register input device\n");
+-		ret = -EIO;
+-		goto err_tcirq;
++	/* Spawn dedicated 60Hz sampling thread */
++	ts->thread = kthread_run(tomtom_ts_thread, ts, "tomtom_ts");
++	if (IS_ERR(ts->thread)) {
++		dev_err(dev, "failed to start sampling thread\n");
++		ret = PTR_ERR(ts->thread);
++		goto err_unregister_input;
+ 	}
+ 
++	pr_info("tomtom_ts: TomTom ONE XL Touchscreen registered successfully\n");
+ 	return 0;
+ 
+- err_tcirq:
+-	free_irq(ts.irq_tc, ts.input);
+- err_inputdev:
+-	input_free_device(ts.input);
+- err_iomap:
+-	iounmap(ts.io);
+- err_clk:
+-	clk_disable_unprepare(ts.clock);
+-	del_timer_sync(&touch_timer);
+- err_clk_get:
+-	clk_put(ts.clock);
++err_unregister_input:
++	input_unregister_device(input_dev);
+ 	return ret;
+ }
+ 
+-/**
+- * s3c2410ts_remove - device core removal entry point
+- * @pdev: The device we are being removed from.
+- *
+- * Free up our state ready to be removed.
+- */
+-static int s3c2410ts_remove(struct platform_device *pdev)
+-{
+-	free_irq(ts.irq_tc, ts.input);
+-	del_timer_sync(&touch_timer);
+-
+-	clk_disable_unprepare(ts.clock);
+-	clk_put(ts.clock);
+-
+-	input_unregister_device(ts.input);
+-	iounmap(ts.io);
+-
+-	return 0;
+-}
+-
+-#ifdef CONFIG_PM
+-static int s3c2410ts_suspend(struct device *dev)
++static int tomtom_ts_remove(struct platform_device *pdev)
+ {
+-	writel(TSC_SLEEP, ts.io + S3C2410_ADCTSC);
+-	disable_irq(ts.irq_tc);
+-	clk_disable(ts.clock);
++	struct tomtom_ts *ts = platform_get_drvdata(pdev);
+ 
+-	return 0;
+-}
+-
+-static int s3c2410ts_resume(struct device *dev)
+-{
+-	struct platform_device *pdev = to_platform_device(dev);
+-	struct s3c2410_ts_mach_info *info = dev_get_platdata(&pdev->dev);
+-
+-	clk_enable(ts.clock);
+-	enable_irq(ts.irq_tc);
++	if (ts->thread)
++		kthread_stop(ts->thread);
+ 
+-	/* Initialise registers */
+-	if ((info->delay & 0xffff) > 0)
+-		writel(info->delay & 0xffff, ts.io + S3C2410_ADCDLY);
+-
+-	writel(WAIT4INT | INT_DOWN, ts.io + S3C2410_ADCTSC);
++	if (ts->clk && !IS_ERR(ts->clk))
++		clk_disable_unprepare(ts->clk);
+ 
++	tomtom_ts_float_pins();
+ 	return 0;
+ }
+ 
+-static const struct dev_pm_ops s3c_ts_pmops = {
+-	.suspend	= s3c2410ts_suspend,
+-	.resume		= s3c2410ts_resume,
+-};
+-#endif
+-
+-static const struct platform_device_id s3cts_driver_ids[] = {
++static const struct platform_device_id tomtom_ts_driver_ids[] = {
+ 	{ "s3c2410-ts", 0 },
+-	{ "s3c2440-ts", 0 },
+-	{ "s3c64xx-ts", FEAT_PEN_IRQ },
++	{ "tomtom-ts", 0 },
+ 	{ }
+ };
+-MODULE_DEVICE_TABLE(platform, s3cts_driver_ids);
++MODULE_DEVICE_TABLE(platform, tomtom_ts_driver_ids);
+ 
+-static struct platform_driver s3c_ts_driver = {
+-	.driver         = {
+-		.name   = "samsung-ts",
+-#ifdef CONFIG_PM
+-		.pm	= &s3c_ts_pmops,
+-#endif
++static struct platform_driver tomtom_ts_driver = {
++	.driver = {
++		.name	= "s3c2410-ts",
+ 	},
+-	.id_table	= s3cts_driver_ids,
+-	.probe		= s3c2410ts_probe,
+-	.remove		= s3c2410ts_remove,
++	.id_table	= tomtom_ts_driver_ids,
++	.probe		= tomtom_ts_probe,
++	.remove		= tomtom_ts_remove,
+ };
+-module_platform_driver(s3c_ts_driver);
+ 
+-MODULE_AUTHOR("Arnaud Patard <arnaud.patard@rtp-net.org>, "
+-	      "Ben Dooks <ben@simtec.co.uk>, "
+-	      "Simtec Electronics <linux@simtec.co.uk>");
+-MODULE_DESCRIPTION("S3C24XX Touchscreen driver");
++module_platform_driver(tomtom_ts_driver);
++
++MODULE_AUTHOR("Antigravity & TomTom GPL Team");
++MODULE_DESCRIPTION("TomTom ONE XL Bit-Banged Resistive Touchscreen Driver");
+ MODULE_LICENSE("GPL v2");
+--- a/drivers/mmc/host/s3cmci.c
++++ b/drivers/mmc/host/s3cmci.c
+@@ -1450,10 +1450,8 @@
+ 	for (i = 0; i < 6; i++) {
+ 		pdata->bus[i] = devm_gpiod_get_index(&pdev->dev, "bus", i,
+ 						     GPIOD_OUT_LOW);
+-		if (IS_ERR(pdata->bus[i])) {
+-			dev_err(&pdev->dev, "failed to get gpio %d\n", i);
+-			return PTR_ERR(pdata->bus[i]);
+-		}
++		if (IS_ERR(pdata->bus[i]))
++			pdata->bus[i] = NULL;
+ 	}
+ 
+ 	if (pdata->no_wprotect)
+@@ -1616,9 +1614,9 @@
+ 	mmc->ops 	= &s3cmci_ops;
+ 	mmc->ocr_avail	= MMC_VDD_32_33 | MMC_VDD_33_34;
+ #ifdef CONFIG_MMC_S3C_HW_SDIO_IRQ
+-	mmc->caps	= MMC_CAP_4_BIT_DATA | MMC_CAP_SDIO_IRQ;
++	mmc->caps	|= MMC_CAP_4_BIT_DATA | MMC_CAP_SDIO_IRQ;
+ #else
+-	mmc->caps	= MMC_CAP_4_BIT_DATA;
++	mmc->caps	|= MMC_CAP_4_BIT_DATA;
+ #endif
+ 	mmc->f_min 	= host->clk_rate / (host->clk_div * 256);
+ 	mmc->f_max 	= host->clk_rate / host->clk_div;
+--- a/drivers/tty/serial/serial_core.c
++++ b/drivers/tty/serial/serial_core.c
+@@ -783,6 +783,15 @@
+ 				ASYNC_CLOSING_WAIT_NONE :
+ 				jiffies_to_msecs(port->closing_wait) / 10;
+ 	retinfo->custom_divisor  = uport->custom_divisor;
++	if (!retinfo->custom_divisor) {
++		unsigned int baud = 0;
++		if (state->port.tty)
++			baud = tty_get_baud_rate(state->port.tty);
++		if (baud && retinfo->baud_base)
++			retinfo->custom_divisor = DIV_ROUND_CLOSEST(retinfo->baud_base, baud);
++		if (!retinfo->custom_divisor)
++			retinfo->custom_divisor = 1;
++	}
+ 	retinfo->hub6	    = uport->hub6;
+ 	retinfo->io_type         = uport->iotype;
+ 	retinfo->iomem_reg_shift = uport->regshift;
+--- a/drivers/video/fbdev/s3c2410fb.c
++++ b/drivers/video/fbdev/s3c2410fb.c
+@@ -832,6 +832,8 @@
+ 	u32 lcdcon1;
+ 
+ 	mach_info = dev_get_platdata(&pdev->dev);
++	pr_err("s3c2410fb: probe started for %s, drv_type=%d, mach_info=%p\n",
++	       pdev->name, drv_type, mach_info);
+ 	if (mach_info == NULL) {
+ 		dev_err(&pdev->dev,
+ 			"no platform data for lcd, cannot attach\n");
+@@ -974,10 +976,12 @@
+ 
+ 	ret = register_framebuffer(fbinfo);
+ 	if (ret < 0) {
++		pr_err("s3c2410fb: register_framebuffer FAILED: %d\n", ret);
+ 		dev_err(&pdev->dev, "Failed to register framebuffer device: %d\n",
+ 			ret);
+ 		goto free_cpufreq;
+ 	}
++	pr_err("s3c2410fb: fb%d registered SUCCESS!\n", fbinfo->node);
+ 
+ 	/* create device files */
+ 	ret = device_create_file(&pdev->dev, &dev_attr_debug);
+@@ -1117,11 +1121,14 @@
+ 
+ int __init s3c2410fb_init(void)
+ {
+-	int ret = platform_driver_register(&s3c2410fb_driver);
+-
+-	if (ret == 0)
++	int ret;
++	pr_err("s3c2410fb: module_init called\n");
++	ret = platform_driver_register(&s3c2410fb_driver);
++	pr_err("s3c2410fb: s3c2410 driver reg ret=%d\n", ret);
++	if (ret == 0) {
+ 		ret = platform_driver_register(&s3c2412fb_driver);
+-
++		pr_err("s3c2410fb: s3c2412 driver reg ret=%d\n", ret);
++	}
+ 	return ret;
+ }
+ 
+--- a/fs/proc/proc_sysctl.c
++++ b/fs/proc/proc_sysctl.c
+@@ -1394,6 +1394,7 @@
+ 	drop_sysctl_table(&dir->header);
+ 	spin_unlock(&sysctl_lock);
+ fail:
++	pr_emerg("SYSCTL: register failed for path '%s'\n", path);
+ 	kfree(header);
+ 	dump_stack();
+ 	return NULL;
+--- a/net/sysctl_net.c
++++ b/net/sysctl_net.c
+@@ -101,8 +101,10 @@
+ 	 * network namespace.
+ 	 */
+ 	net_header = register_sysctl("net", empty);
+-	if (!net_header)
++	if (!net_header) {
++		pr_emerg("NETSYSCTL: register_sysctl(net) FAILED\n");
+ 		goto out;
++	}
+ 	ret = register_pernet_subsys(&sysctl_pernet_ops);
+ 	if (ret)
+ 		goto out1;
+--- a/sound/soc/codecs/wm8711.c
++++ b/sound/soc/codecs/wm8711.c
+@@ -68,9 +68,14 @@
+ 
+ };
+ 
+-/* Output Mixer */
++/* Output Mixer
++ *
++ * WM8711 is playback-only.  TomTom's original 2.6 WM8711 driver
++ * explicitly treats line input as unsupported.  Do not expose the
++ * stale WM8731-style line-bypass control: its DAPM route references
++ * a non-existent "Line Input" widget and prevents card registration.
++ */
+ static const struct snd_kcontrol_new wm8711_output_mixer_controls[] = {
+-SOC_DAPM_SINGLE("Line Bypass Switch", WM8711_APANA, 3, 1, 0),
+ SOC_DAPM_SINGLE("HiFi Playback Switch", WM8711_APANA, 4, 1, 0),
+ };
+ 
+@@ -87,7 +92,6 @@
+ 
+ static const struct snd_soc_dapm_route wm8711_intercon[] = {
+ 	/* output mixer */
+-	{"Output Mixer", "Line Bypass Switch", "Line Input"},
+ 	{"Output Mixer", "HiFi Playback Switch", "DAC"},
+ 
+ 	/* outputs */
+@@ -159,8 +163,21 @@
+ 	struct snd_soc_component *component = dai->component;
+ 	struct wm8711_priv *wm8711 =  snd_soc_component_get_drvdata(component);
+ 	u16 iface = snd_soc_component_read(component, WM8711_IFACE) & 0xfff3;
+-	int i = get_coeff(wm8711->sysclk, params_rate(params));
+-	u16 srate = (coeff_div[i].sr << 2) |
++	unsigned int coeff_rate = params_rate(params);
++	int i;
++	u16 srate;
++
++	/*
++	 * TomTom S3C2412 derives 44.1k-family audio from 66 MHz PCLK.
++	 * With 256fs/div6 the physical LRCLK is 42968.75 Hz.  Expose that
++	 * rate to ALSA so userspace can resample 44100 -> 42968, while the
++	 * WM8711 must still use its nominal 44.1k coefficient/register recipe.
++	 */
++	if (coeff_rate == 42968)
++		coeff_rate = 44100;
++
++	i = get_coeff(wm8711->sysclk, coeff_rate);
++	srate = (coeff_div[i].sr << 2) |
+ 		(coeff_div[i].bosr << 1) | coeff_div[i].usb;
+ 
+ 	snd_soc_component_write(component, WM8711_SRATE, srate);
+@@ -320,7 +337,7 @@
+ 	return 0;
+ }
+ 
+-#define WM8711_RATES SNDRV_PCM_RATE_8000_96000
++#define WM8711_RATES (SNDRV_PCM_RATE_8000_96000 | SNDRV_PCM_RATE_KNOT)
+ 
+ #define WM8711_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S20_3LE |\
+ 	SNDRV_PCM_FMTBIT_S24_LE)
+--- a/sound/soc/samsung/Kconfig
++++ b/sound/soc/samsung/Kconfig
+@@ -51,6 +51,16 @@
+ 	help
+ 	  Say Y if you want to add support for SoC audio on the Jive.
+ 
++config SND_SOC_SAMSUNG_TOMTOM_WM8711
++	tristate "Audio support for TomTom ONE XL (S3C2412 + WM8711)"
++	depends on MACH_TOMTOMGO && I2C
++	depends on SND_SOC_I2C_AND_SPI
++	select SND_SOC_WM8711
++	select SND_S3C2412_SOC_I2S
++	help
++	  Enable ALSA SoC playback support for the TomTom ONE XL Limerick
++	  platform using the Samsung S3C2412 I2S controller and Wolfson WM8711.
++
+ config SND_SOC_SAMSUNG_SMDK_WM8580
+ 	tristate "SoC I2S Audio support for WM8580 on SMDK"
+ 	depends on MACH_SMDK6410 || COMPILE_TEST
+--- a/sound/soc/samsung/Makefile
++++ b/sound/soc/samsung/Makefile
+@@ -68,3 +68,6 @@
+ obj-$(CONFIG_SND_SOC_SAMSUNG_TM2_WM5110) += snd-soc-tm2-wm5110.o
+ obj-$(CONFIG_SND_SOC_SAMSUNG_ARIES_WM8994) += snd-soc-aries-wm8994.o
+ obj-$(CONFIG_SND_SOC_SAMSUNG_MIDAS_WM1811) += snd-soc-midas-wm1811.o
++
++snd-soc-tomtom-wm8711-objs := tomtom_wm8711.o
++obj-$(CONFIG_SND_SOC_SAMSUNG_TOMTOM_WM8711) += snd-soc-tomtom-wm8711.o
+--- a/sound/soc/samsung/s3c2412-i2s.c
++++ b/sound/soc/samsung/s3c2412-i2s.c
+@@ -165,9 +165,10 @@
+ #endif
+ 
+ #define S3C2412_I2S_RATES \
+-	(SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_11025 | SNDRV_PCM_RATE_16000 | \
+-	SNDRV_PCM_RATE_22050 | SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 | \
+-	SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_88200 | SNDRV_PCM_RATE_96000)
++	(SNDRV_PCM_RATE_KNOT | SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_11025 | \
++	 SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_22050 | SNDRV_PCM_RATE_32000 | \
++	 SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_88200 | \
++	 SNDRV_PCM_RATE_96000)
+ 
+ static const struct snd_soc_dai_ops s3c2412_i2s_dai_ops = {
+ 	.hw_params	= s3c2412_i2s_hw_params,
+--- a/arch/arm/mach-s3c/mach-tomtomgo.c
++++ b/arch/arm/mach-s3c/mach-tomtomgo.c
+@@ -0,0 +1,939 @@
++// SPDX-License-Identifier: GPL-2.0
++//
++// Linux 6.1 LTS Machine Support for TomTom ONE XL (Samsung S3C2412 - Limerick)
++// Full Hardware Specification ported from 2.6 GPL source
++//
++
++#include <linux/kernel.h>
++#include <linux/types.h>
++#include <linux/interrupt.h>
++#include <linux/list.h>
++#include <linux/timer.h>
++#include <linux/init.h>
++#include <linux/gpio/machine.h>
++#include <linux/gpio.h>
++#include <linux/serial_core.h>
++#include <linux/serial_s3c.h>
++#include <linux/platform_device.h>
++#include <linux/io.h>
++#include <linux/memblock.h>
++#include <linux/i2c.h>
++#include <linux/spi/spi.h>
++#include <linux/spi/spi_gpio.h>
++#include <linux/delay.h>
++#include <linux/pstore_ram.h>
++#include <linux/font.h>
++#include <linux/console.h>
++#include <linux/kmsg_dump.h>
++#include <linux/clk.h>
++#include <linux/reboot.h>
++#include <linux/miscdevice.h>
++#include <linux/uaccess.h>
++#include <asm/system_misc.h>
++
++#include <asm/mach/arch.h>
++#include <asm/mach/map.h>
++#include <asm/mach/irq.h>
++
++#include <asm/setup.h>
++#include <asm/irq.h>
++#include <asm/mach-types.h>
++
++#include "hardware-s3c24xx.h"
++#include "regs-gpio.h"
++#include "regs-clock-s3c24xx.h"
++#include "irqs-s3c24xx.h"
++
++#include <linux/input.h>
++#include <linux/gpio_keys.h>
++#include <linux/platform_data/usb-s3c2410_udc.h>
++#include <linux/platform_data/i2c-s3c2410.h>
++#include <linux/platform_data/fb-s3c2410.h>
++#include <linux/platform_data/touchscreen-s3c2410.h>
++#include <linux/platform_data/mmc-s3cmci.h>
++#include <linux/platform_data/asoc-s3c.h>
++#include <linux/platform_data/dma-s3c24xx.h>
++#include "gpio-samsung.h"
++#include "gpio-cfg.h"
++
++#include "devs.h"
++#include "cpu.h"
++#include "s3c24xx.h"
++#include "dma-s3c24xx.h"
++
++/*
++ * Early on-screen debug console: writes into the framebuffer the TomTom
++ * bootloader left configured. The bootloader's LCD controller keeps scanning
++ * that address, so text appears on screen without any kernel fb driver.
++ * The region is reserved from the allocator so it can never corrupt
++ * live kernel/user memory.
++ */
++extern unsigned long tomtom_fb_phys;
++
++#define TT_FB_SIZE	(480 * 272 * 2)
++static int ttfb_x, ttfb_y;
++static u16 __iomem *ttfb_base;
++
++static void ttfb_scroll_up(void)
++{
++	int i;
++	/* Scroll 16 text lines (16 * 16 * 480 = 122,880 pixels) */
++	for (i = 0; i < 16 * 16 * 480; i++)
++		ttfb_base[i] = ttfb_base[i + 16 * 480];
++	/* Clear bottom line 16 (16 * 480 = 7,680 pixels) */
++	for (i = 16 * 16 * 480; i < 17 * 16 * 480; i++)
++		ttfb_base[i] = 0x0000;
++	ttfb_y = 16;
++}
++
++static void ttfb_newline(void)
++{
++	ttfb_x = 0;
++	if (++ttfb_y >= 17)
++		ttfb_scroll_up();
++}
++
++static void ttfb_putchar(char c)
++{
++	int row, col;
++	if (!ttfb_base)
++		return;
++	switch (c) {
++	case '\n': ttfb_newline(); return;
++	case '\r': ttfb_x = 0; return;
++	case '\t':
++		ttfb_x = (ttfb_x + 4) & ~3;
++		if (ttfb_x >= 60) ttfb_newline();
++		return;
++	}
++	if (ttfb_x >= 60)
++		ttfb_newline();
++	{
++		const unsigned char *glyph = font_vga_8x16.data + (unsigned char)c * 16;
++		u16 *dst = ttfb_base + (ttfb_y * 16) * 480 + ttfb_x * 8;
++		for (row = 0; row < 16; row++) {
++			unsigned char bits = glyph[row];
++			for (col = 0; col < 8; col++)
++				dst[row * 480 + col] = (bits & (0x80 >> col)) ? 0xFFFF : 0x0000;
++		}
++	}
++	ttfb_x++;
++}
++
++static bool ttfb_active = false;
++
++static void ttfb_console_write(struct console *con, const char *s, unsigned int n)
++{
++	if (!ttfb_active || !ttfb_base)
++		return;
++	while (n--)
++		ttfb_putchar(*s++);
++}
++
++static struct console ttfb_console = {
++	.name	= "ttfb",
++	.write	= ttfb_console_write,
++	.flags	= CON_PRINTBUFFER | CON_ENABLED | CON_ANYTIME,
++	.index	= -1,
++};
++
++/*
++ * Panic-time truth screen: paints the last lines of the kernel ring buffer
++ * directly into the framebuffer, bypassing the console layer completely.
++ */
++static void tt_panic_dump(struct kmsg_dumper *d, enum kmsg_dump_reason reason)
++{
++	static char lines[256][61];
++	static int idx;
++	struct kmsg_dump_iter iter;
++	char buf[64];
++	size_t len = 0;
++	int row, col, i, start;
++
++	if (!ttfb_base)
++		return;
++
++	kmsg_dump_rewind(&iter);
++	while (kmsg_dump_get_line(&iter, false, buf, sizeof(buf) - 1, &len)) {
++		if (len > 60)
++			len = 60;
++		memcpy(lines[idx % 256], buf, len);
++		lines[idx % 256][len] = '\0';
++		idx++;
++	}
++
++	/* Prefer: sysctl failure -> first oops -> tail */
++	start = 0;
++	if (idx > 17) {
++		for (i = idx - 1; i >= 0 && i >= idx - 256; i--) {
++			if (strstr(lines[i % 256], "SYSCTL: register failed") ||
++			    strstr(lines[i % 256], "sysctl table check failed")) {
++				start = (i > 1) ? i - 2 : 0;
++				break;
++			}
++		}
++		if (!start) {
++			for (i = idx - 1; i >= 0 && i >= idx - 256; i--) {
++				if (strstr(lines[i % 256], "Internal error") ||
++				    strstr(lines[i % 256], "Oops")) {
++					start = (i > 1) ? i - 2 : 0;
++					break;
++				}
++			}
++		}
++		if (!start)
++			start = idx - 17;
++	}
++
++	for (row = 0; row < 17; row++)
++		for (col = 0; col < 480; col++)
++			ttfb_base[row * 16 * 480 + col] = 0x0000;
++
++	for (i = start; i < idx && (i - start) < 17; i++) {
++		int srow = (i - start) * 16;
++		char *s = lines[i % 256];
++		for (col = 0; s[col] && col < 60; col++) {
++			const unsigned char *g = font_vga_8x16.data +
++						 (unsigned char)s[col] * 16;
++			int r, c;
++			for (r = 0; r < 16; r++) {
++				unsigned char bits = g[r];
++				u16 *dst = ttfb_base + srow * 480 + col * 8;
++				for (c = 0; c < 8; c++)
++					dst[r * 480 + c] =
++						(bits & (0x80 >> c)) ? 0xffff : 0x0000;
++			}
++		}
++	}
++}
++
++static struct kmsg_dumper tt_kmsg_dumper = {
++	.dump = tt_panic_dump,
++};
++
++static struct map_desc tomtom_iodesc[] __initdata = {
++};
++
++/* UART0 = Dock, UART1 = GPS (Sirf/GlobalLocate), UART2 = Bluetooth (CSR BC3) */
++static struct s3c2410_uartcfg tomtom_uartcfgs[] __initdata = {
++	[0] = {
++		.hwport	     = 0,
++		.flags	     = 0,
++		.ucon	     = 0x3c5,
++		.ulcon	     = 0x03,
++		.ufcon	     = 0x51,
++	},
++	[1] = {
++		.hwport	     = 1,
++		.flags	     = 0,
++		.ucon	     = 0x3c5,
++		.ulcon	     = 0x03,
++		.ufcon	     = 0x51,
++	},
++	[2] = {
++		.hwport	     = 2,
++		.flags	     = 0,
++		.ucon	     = 0x3c5,
++		.ulcon	     = 0x03,
++		.ufcon	     = 0x51,
++	}
++};
++
++/* LCD Framebuffer - Samsung LTE430WQ 480x272 (16bpp) for TomTom ONE XL */
++static struct s3c2410fb_display tomtom_lcd_display __initdata = {
++	.type		= S3C2410_LCDCON1_TFT,
++	.width		= 480,
++	.height		= 272,
++	.xres		= 480,
++	.yres		= 272,
++	.bpp		= 16,
++	.pixclock	= 102450, /* ~9.76 MHz pixel clock for 60Hz */
++	.left_margin	= 8,      /* HFPD = 7 */
++	.right_margin	= 46,     /* HBPD = 45 */
++	.hsync_len	= 42,     /* HSPW = 41 */
++	.upper_margin	= 1,      /* VBPD = 0 */
++	.lower_margin	= 3,      /* VFPD = 2 */
++	.vsync_len	= 11,     /* VSPW = 10 */
++	.lcdcon5	= S3C2410_LCDCON5_FRM565 |
++			  S3C2410_LCDCON5_INVVLINE |
++			  S3C2410_LCDCON5_INVVFRAME |
++			  S3C2410_LCDCON5_PWREN |
++			  S3C2410_LCDCON5_HWSWP,
++};
++
++static struct s3c2410fb_mach_info tomtom_fb_info __initdata = {
++	.displays	= &tomtom_lcd_display,
++	.num_displays	= 1,
++	.default_display = 0,
++	.gpcup		= 0xffffffff,
++	.gpcup_mask	= 0xffffffff,
++	.gpccon		= 0xaaaa56aa,
++	.gpccon_mask	= 0xffffffff,
++	.gpdup		= 0xffffffff,
++	.gpdup_mask	= 0xffffffff,
++	.gpdcon		= 0xaaaaaaaa,
++	.gpdcon_mask	= 0xffffffff,
++};
++
++/* SD / MMC Card Support */
++static struct s3c24xx_mci_pdata tomtom_mci_pdata __initdata = {
++	.no_wprotect	= 1,
++	.no_detect	= 1,
++	.wprotect_invert = 0,
++	.use_dma	= 0,
++};
++
++static struct gpiod_lookup_table tomtom_mci_gpio_table = {
++	.dev_id = "s3c2412-sdi",
++	.table = {
++		GPIO_LOOKUP("GPIOF", 2, "detect", GPIO_ACTIVE_LOW),
++		GPIO_LOOKUP("GPIOH", 8, "wprotect", GPIO_ACTIVE_HIGH),
++		{ },
++	},
++};
++
++/* USB Gadget UDC (GPF7 Pull-up on Limerick) */
++static struct s3c2410_udc_mach_info tomtom_udc_cfg __initdata = {
++};
++
++static struct gpiod_lookup_table tomtom_udc_gpio_table = {
++	.dev_id = "s3c2410-usbgadget",
++	.table = {
++		GPIO_LOOKUP("GPIOF", 7, "pullup", GPIO_ACTIVE_HIGH),
++		{ },
++	},
++};
++
++/* 4-Wire Resistive Touchscreen */
++static struct s3c2410_ts_mach_info tomtom_ts_cfg __initdata = {
++	.delay			= 10000,
++	.presc			= 49,
++	.oversampling_shift	= 2,
++};
++
++/* Persistent panic/console log: survives warm reboot, dumped to storage later */
++
++/*
++ * Wolfson WM8711 control bus.
++ *
++ * The TomTom 2.6 GPL driver does NOT use I2C on Limerick.  It clocks a
++ * 16-bit register word over three dedicated GPIOs:
++ *   GPB4 = L3CLOCK/SCK
++ *   GPB2 = L3DATA/MOSI
++ *   GPB3 = L3MODE/CS (active low)
++ * The waveform is SPI mode 0, MSB first.
++ */
++static struct spi_gpio_platform_data tomtom_wm8711_spi_pdata = {
++	.num_chipselect = 1,
++};
++
++static struct platform_device tomtom_wm8711_spi = {
++	.name = "spi_gpio",
++	.id = 3,
++	.dev.platform_data = &tomtom_wm8711_spi_pdata,
++};
++
++static struct gpiod_lookup_table tomtom_wm8711_spi_gpios = {
++	.dev_id = "spi_gpio.3",
++	.table = {
++		GPIO_LOOKUP("GPIOB", 4, "sck",  GPIO_ACTIVE_HIGH),
++		GPIO_LOOKUP("GPIOB", 2, "mosi", GPIO_ACTIVE_HIGH),
++		GPIO_LOOKUP("GPIOB", 3, "cs",   GPIO_ACTIVE_HIGH),
++		{ },
++	},
++};
++
++static struct spi_board_info tomtom_wm8711_spi_dev[] __initdata = {
++	{
++		.modalias = "wm8711",
++		.bus_num = 3,
++		.chip_select = 0,
++		.mode = SPI_MODE_0,
++		.max_speed_hz = 100000,
++	},
++};
++
++/*
++ * Dedicated Hardware-Polled Power Button for TomTom ONE XL
++ *
++ * GPF0 connects to the physical top power button.
++ * Automatically learns the idle level at startup, then detects transitions.
++ * Logs any changes to GPFDAT for hardware diagnostics.
++ */
++static struct input_dev *tomtom_pwr_dev;
++static struct timer_list tomtom_pwr_timer;
++static int tomtom_pwr_idle_state = -1;
++static int tomtom_pwr_last_pressed = 0;
++static unsigned long tomtom_last_gpfdat = 0;
++
++static void tomtom_pwr_timer_fn(struct timer_list *t)
++{
++	unsigned long gpfdat = __raw_readl(S3C2410_GPFDAT);
++	int cur_bit = (gpfdat & (1 << 0)) ? 1 : 0;
++
++	if (tomtom_pwr_idle_state < 0) {
++		/* Learn resting/unpressed state at startup */
++		tomtom_pwr_idle_state = cur_bit;
++		tomtom_last_gpfdat = gpfdat;
++		pr_notice("TT: Power button idle level = %d (GPFDAT=0x%04lx)\n",
++			  cur_bit, gpfdat & 0xffff);
++	}
++
++	/* Log any state transitions on GPFDAT */
++	if ((gpfdat & 0xff) != (tomtom_last_gpfdat & 0xff)) {
++		pr_notice("TT: GPFDAT changed: 0x%04lx -> 0x%04lx\n",
++			  tomtom_last_gpfdat & 0xffff, gpfdat & 0xffff);
++		tomtom_last_gpfdat = gpfdat;
++	}
++
++	int pressed = (cur_bit != tomtom_pwr_idle_state);
++
++	if (pressed != tomtom_pwr_last_pressed) {
++		tomtom_pwr_last_pressed = pressed;
++		input_report_key(tomtom_pwr_dev, KEY_POWER, pressed);
++		input_sync(tomtom_pwr_dev);
++		pr_notice("TT: Power button %s (cur=%d, idle=%d, GPFDAT=0x%04lx)\n",
++			  pressed ? "PRESSED" : "RELEASED", cur_bit, tomtom_pwr_idle_state, gpfdat & 0xffff);
++	}
++
++	mod_timer(&tomtom_pwr_timer, jiffies + msecs_to_jiffies(30));
++}
++
++static int __init tomtom_init_power_button(void)
++{
++	int error;
++
++	/* Configure GPF0 as input with pull-down disabled (uses board pull-up) */
++	s3c_gpio_cfgpin(S3C2410_GPF(0), S3C_GPIO_INPUT);
++	__raw_writel(__raw_readl(S3C2410_GPFUP) | (1 << 0), S3C2410_GPFUP);
++
++	tomtom_pwr_dev = input_allocate_device();
++	if (!tomtom_pwr_dev) {
++		pr_err("TT: Failed to allocate power button input device\n");
++		return -ENOMEM;
++	}
++
++	tomtom_pwr_dev->name = "TomTom Power Button";
++	tomtom_pwr_dev->phys = "tomtom/power0";
++	tomtom_pwr_dev->id.bustype = BUS_HOST;
++	tomtom_pwr_dev->id.vendor = 0x0001;
++	tomtom_pwr_dev->id.product = 0x0001;
++	tomtom_pwr_dev->id.version = 0x0100;
++
++	set_bit(EV_KEY, tomtom_pwr_dev->evbit);
++	set_bit(KEY_POWER, tomtom_pwr_dev->keybit);
++
++	error = input_register_device(tomtom_pwr_dev);
++	if (error) {
++		pr_err("TT: Failed to register power button input device: %d\n", error);
++		input_free_device(tomtom_pwr_dev);
++		return error;
++	}
++
++	timer_setup(&tomtom_pwr_timer, tomtom_pwr_timer_fn, 0);
++	mod_timer(&tomtom_pwr_timer, jiffies + msecs_to_jiffies(50));
++
++	pr_notice("TT: Direct hardware polled power button registered on GPF0\n");
++	return 0;
++}
++late_initcall(tomtom_init_power_button);
++
++
++/*
++ * TomTom ONE XL (Limerick) S3C2412 I2S wiring.
++ *
++ * Original 2.6 hardware oracle:
++ *   GPE0 = I2SLRCK
++ *   GPE1 = I2SSCLK
++ *   GPE2 = CDCLK / codec master clock
++ *   GPE4 = I2SSDO
++ *   codec = WM8711 in slave mode, S3C2412 is bus master
++ */
++static struct s3c_audio_pdata tomtom_iis_pdata = {
++	.dma_filter	= s3c24xx_dma_filter,
++	.dma_playback	= (void *)DMACH_I2S_OUT,
++	.dma_capture	= (void *)DMACH_I2S_IN,
++};
++
++
++void tomtom_audio_set_amp(bool on)
++{
++	s3c_gpio_cfgpin(S3C2410_GPF(6), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPF(6), on ? 1 : 0);
++}
++EXPORT_SYMBOL_GPL(tomtom_audio_set_amp);
++
++void tomtom_audio_set_dac_power(bool on)
++{
++	s3c_gpio_cfgpin(S3C2410_GPE(13), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPE(13), on ? 1 : 0);
++}
++EXPORT_SYMBOL_GPL(tomtom_audio_set_dac_power);
++
++static void __init tomtom_audio_board_setup(void)
++{
++	/*
++	 * Match TomTom 2.6 sound_poweron(): keep speaker amp muted, power the
++	 * WM8711 rail, and allow 50 ms to settle before codec programming.
++	 */
++	tomtom_audio_set_amp(false);
++	tomtom_audio_set_dac_power(true);
++	msleep(50);
++
++	/* Bind the generic legacy device to the S3C2412-specific ASoC driver. */
++	s3c_device_iis.name = "s3c2412-iis";
++	s3c_device_iis.dev.platform_data = &tomtom_iis_pdata;
++
++	/* Match the original TomTom 2.6 I2S pin mux. */
++	s3c_gpio_cfgpin(S3C2410_GPE(0), S3C_GPIO_SFN(2)); /* I2SLRCK */
++	s3c_gpio_cfgpin(S3C2410_GPE(1), S3C_GPIO_SFN(2)); /* I2SSCLK */
++	s3c_gpio_cfgpin(S3C2410_GPE(2), S3C_GPIO_SFN(2)); /* CDCLK */
++	s3c_gpio_cfgpin(S3C2410_GPE(4), S3C_GPIO_SFN(2)); /* I2SSDO */
++
++	pr_notice("TT: audio board setup: S3C2412 I2S + DMA + WM8711 wiring prepared\n");
++}
++
++static struct platform_device *tomtom_devices[] __initdata = {
++	&s3c_device_lcd,
++	&s3c_device_sdi,
++	&s3c_device_usbgadget,
++	&s3c_device_i2c0,
++	&tomtom_wm8711_spi,
++	&s3c2412_device_dma,
++	&s3c_device_iis,
++	&s3c_device_rtc,
++	&s3c_device_ts,
++};
++
++#define ATAG_TOMTOM_VIDEOLFB    0x54410008
++#define ATAG_TOMTOM_RESET_STATE 0x5441000a
++#define ATAG_TOMTOM_BOOT_DEVICE 0x5441000b
++#define ATAG_TOMTOM_TFT_TYPE    0x5441000c
++#define ATAG_TOMTOM_FEATURE     0x5441000d
++
++static int __init parse_tag_tomtom_videolfb(const struct tag *tag)
++{
++	return 0;
++}
++__tagtable(ATAG_TOMTOM_VIDEOLFB, parse_tag_tomtom_videolfb);
++
++static int __init parse_tag_tomtom_reset(const struct tag *tag)
++{
++	return 0;
++}
++__tagtable(ATAG_TOMTOM_RESET_STATE, parse_tag_tomtom_reset);
++
++static int __init parse_tag_tomtom_bootdev(const struct tag *tag)
++{
++	return 0;
++}
++__tagtable(ATAG_TOMTOM_BOOT_DEVICE, parse_tag_tomtom_bootdev);
++
++static int __init parse_tag_tomtom_tft(const struct tag *tag)
++{
++	return 0;
++}
++__tagtable(ATAG_TOMTOM_TFT_TYPE, parse_tag_tomtom_tft);
++
++static int __init parse_tag_tomtom_feature(const struct tag *tag)
++{
++	return 0;
++}
++__tagtable(ATAG_TOMTOM_FEATURE, parse_tag_tomtom_feature);
++
++static int __init parse_tag_tomtom_none(const struct tag *tag)
++{
++	return 0;
++}
++__tagtable(0x00000000, parse_tag_tomtom_none);
++
++static void __init tomtom_fixup(struct tag *tags, char **cmdline)
++{
++	/* Bootloader ATAGs may lack a usable memory tag - provide the bank
++	 * explicitly (memblock merges if ATAGs also report it) */
++	memblock_add(0x30000000, SZ_32M);
++	*cmdline = "console=ttfb console=tty0 console=ttySAC0,115200 root=/dev/ram0 rw rdinit=/init quiet loglevel=3 vt.global_cursor_default=0";
++}
++
++static void __init tomtom_map_io(void)
++{
++	unsigned long kstart = PHYS_OFFSET + 0x8000;
++	unsigned long kend = __pa(_end);
++	bool overlap;
++
++	overlap = tomtom_fb_phys < kend && (tomtom_fb_phys + TT_FB_SIZE) > kstart;
++
++	/* Only hook the debug console if the fb cannot clobber the kernel */
++	if (!overlap && tomtom_fb_phys >= 0x30100000 && tomtom_fb_phys < 0x32000000) {
++		int i;
++		memblock_reserve(tomtom_fb_phys & PAGE_MASK, TT_FB_SIZE);
++		ttfb_base = (u16 *)(0xc0000000 + (tomtom_fb_phys - 0x30000000));
++		/* Clear entire screen to solid black */
++		for (i = 0; i < 480 * 272; i++)
++			ttfb_base[i] = 0x0000;
++		ttfb_x = ttfb_y = 0;
++		ttfb_active = true;
++		register_console(&ttfb_console);
++		kmsg_dump_register(&tt_kmsg_dumper);
++	}
++
++	s3c24xx_init_io(tomtom_iodesc, ARRAY_SIZE(tomtom_iodesc));
++	s3c2412_init_uarts(tomtom_uartcfgs, ARRAY_SIZE(tomtom_uartcfgs));
++	s3c24xx_set_timer_source(S3C24XX_PWM3, S3C24XX_PWM4);
++}
++
++static void __init tomtom_init_time(void)
++{
++	/* Set S3C2412 12MHz UPLL for exact 48MHz USB full-speed operation */
++	writel(0x00040070, S3C24XX_VA_CLKPWR + 0x08);
++	s3c2412_init_clocks(12000000);
++	s3c24xx_timer_init();
++}
++
++static void tomtom_power_off(void)
++{
++	pr_notice("TT: Powering off device via GPE3 (PWR_RST)\n");
++	/* Inform bootloader that device powered down cleanly (OFFRST = 0x3) */
++	writel(0x3, S3C24XX_VA_CLKPWR + 0x70);
++	s3c_gpio_cfgpin(S3C2410_GPE(3), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPE(3), 1);
++	while (1) {
++		cpu_relax();
++	}
++}
++
++/*
++ * TomTom ONE XL (Limerick) reboot:
++ *
++ * Hardware tests showed INFORM0=NEUTRAL followed by S3C2412 SWRST powers the
++ * unit off, while ARM soft_restart(0) freezes because address 0 is not a live
++ * bootloader re-entry point after Linux handover.
++ *
++ * The original TomTom 2.6 wake path also defines SFTRST (INFORM0=0x9) and uses
++ * it for a simulated wake/restart on S3C2412.  Use that original semantic here
++ * with the original cache-resident S3C2412 reset stub.
++ */
++extern void s3c2412_cpu_reboot(void);
++
++static void tomtom_sftrst_reboot(void)
++{
++	pr_notice("TT: TomTom S3C2412 SFTRST reboot (INFORM0=0x9)\n");
++	writel(0x9, S3C24XX_VA_CLKPWR + 0x70);
++	s3c2412_cpu_reboot();
++
++	while (1)
++		cpu_relax();
++}
++
++static int tomtom_restart_handler(struct notifier_block *this,
++				  unsigned long mode, void *cmd)
++{
++	tomtom_sftrst_reboot();
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block tomtom_restart_nb = {
++	.notifier_call = tomtom_restart_handler,
++	.priority = 255,
++};
++
++static void tomtom_restart(enum reboot_mode mode, const char *cmd)
++{
++	tomtom_sftrst_reboot();
++}
++
++#define GPIO_DRIVER_MAGIC	'U'
++#define IOR_HWSTATUS		_IOR(GPIO_DRIVER_MAGIC, 0, unsigned int)
++#define IOR_BT_MODE		_IOR(GPIO_DRIVER_MAGIC, 8, unsigned int)
++
++static long tomtom_hwstatus_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	/* IOR_BT_MODE: 0x80045508 */
++	if (cmd == IOR_BT_MODE || (cmd & 0xffff) == 0x5508) {
++		unsigned int mode = 1;
++		if (arg) {
++			if (copy_from_user(&mode, (void __user *)arg, sizeof(mode)))
++				return -EFAULT;
++		}
++		pr_notice("TT: Resetting CSR Bluetooth chip (GPA19 toggle, mode=%u)...\n", mode);
++		/* Match the original TomTom 2.6 IOR_BT_MODE path for Limerick:
++		 * this ioctl controls BT_MODE (not populated on this board) and BT_RESET.
++		 * Do not repurpose GPS power or Bluetooth flow-control pins here. */
++
++		s3c_gpio_cfgpin(S3C2410_GPA(19), S3C_GPIO_OUTPUT);
++		gpio_set_value(S3C2410_GPA(19), 0); /* Assert Reset (LOW) */
++		mdelay(10);
++		gpio_set_value(S3C2410_GPA(19), 1); /* Deassert Reset (HIGH) */
++		mdelay(10);
++		gpio_set_value(S3C2410_GPA(19), 0); /* Pulse Reset (LOW) */
++		mdelay(10);
++		gpio_set_value(S3C2410_GPA(19), 1); /* Release Reset (HIGH) */
++		mdelay(100);
++		return 0;
++	}
++
++	if (cmd == IOR_HWSTATUS || (cmd & 0xffff) == 0x5500) {
++		if (arg) {
++			unsigned int status = 0;
++			if (copy_to_user((void __user *)arg, &status, sizeof(status)))
++				return -EFAULT;
++		}
++		return 0;
++	}
++
++	return 0;
++}
++
++static int tomtom_hwstatus_open(struct inode *inode, struct file *file)
++{
++	return 0;
++}
++
++static int tomtom_hwstatus_release(struct inode *inode, struct file *file)
++{
++	return 0;
++}
++
++static const struct file_operations tomtom_hwstatus_fops = {
++	.owner          = THIS_MODULE,
++	.open           = tomtom_hwstatus_open,
++	.release        = tomtom_hwstatus_release,
++	.unlocked_ioctl = tomtom_hwstatus_ioctl,
++};
++
++static struct miscdevice tomtom_hwstatus_dev = {
++	.minor = MISC_DYNAMIC_MINOR,
++	.name  = "hwstatus",
++	.fops  = &tomtom_hwstatus_fops,
++};
++
++static int __init tomtom_hwstatus_init(void)
++{
++	int ret;
++
++	ret = register_chrdev(240, "hwstatus", &tomtom_hwstatus_fops);
++	if (ret == 0)
++		pr_notice("TT: registered chrdev major 240 for /dev/hwstatus\n");
++
++	ret = misc_register(&tomtom_hwstatus_dev);
++	if (ret == 0)
++		pr_notice("TT: registered misc device /dev/hwstatus\n");
++
++	return 0;
++}
++late_initcall(tomtom_hwstatus_init);
++
++static void __init tomtom_machine_init(void)
++{
++	pr_notice("TT: machine_init reached\n");
++	/* 1. USB Mode: Switch USB port to peripheral (device) mode */
++	s3c2410_modify_misccr(S3C2410_MISCCR_USBHOST |
++			      S3C2410_MISCCR_USBSUSPND0 |
++			      S3C2410_MISCCR_USBSUSPND1, 0x0);
++	{
++		struct clk *c1 = clk_get(NULL, "usb-device");
++		if (!IS_ERR(c1)) clk_prepare_enable(c1);
++		struct clk *c2 = clk_get(NULL, "usb-bus-gadget");
++		if (!IS_ERR(c2)) clk_prepare_enable(c2);
++	}
++	pr_notice("TT: step1 misccr done\n");
++
++	pr_notice("TT: step2 gpio rails\n");
++	/* Power Button: GPF0 input */
++	s3c_gpio_cfgpin(S3C2410_GPF(0), S3C_GPIO_INPUT);
++	/* USB Power / Host Detect: GPF1 input */
++	s3c_gpio_cfgpin(S3C2410_GPF(1), S3C_GPIO_INPUT);
++	/* Disable internal pull-downs on GPF0 and GPF1 (board has external pull-ups) */
++	__raw_writel(__raw_readl(S3C2410_GPFUP) | (1 << 0) | (1 << 1), S3C2410_GPFUP);
++
++	/* Mask ALL external interrupts in EINTMASK (bits 0..23 = 1) */
++	__raw_writel(0x00ffffff, S3C2410_GPIOREG(0xb4));
++	__raw_writel(0x00ffffff, S3C2410_GPIOREG(0xb8)); /* Clear any pending status */
++
++	/* MOVI_PWR_ON: GPA20 -> 1 (Internal MOVINAND Storage Power) */
++	s3c_gpio_cfgpin(S3C2410_GPA(20), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPA(20), 1);
++
++	/* SD_PWR_ON: GPC6 -> 1 (Storage Power Rail) */
++	s3c_gpio_cfgpin(S3C2410_GPC(6), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPC(6), 1);
++
++	/* EN_SD: GPB1 -> 0 (SD/MMC Bus Enable active-low on Limerick) */
++	s3c_gpio_cfgpin(S3C2410_GPB(1), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPB(1), 0);
++
++	/* SW_SD: GPG11 -> 1 (Select Internal MOVINAND storage) */
++	s3c_gpio_cfgpin(S3C2410_GPG(11), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPG(11), 1);
++
++	/* PULLUP_SD: GPB9 -> 1 (SD Bus Pull-up enable) */
++	s3c_gpio_cfgpin(S3C2410_GPB(9), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPB(9), 1);
++
++	pr_notice("TT: step3 lcd power\n");
++	/* 3. LCD Power, Reset, and Backlight */
++	{
++		struct clk *lcd_clk = clk_get(NULL, "lcd");
++		if (!IS_ERR(lcd_clk)) {
++			clk_prepare_enable(lcd_clk);
++			pr_notice("TT: lcd clock locked active\n");
++		}
++	}
++
++	/* LCD_VCC_PWREN: GPG4 -> 0 (Active Low on Limerick) */
++	s3c_gpio_cfgpin(S3C2410_GPG(4), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPG(4), 0);
++
++	pr_notice("TT: step4 touchscreen pins\n");
++	/* 
++	 * TomTom ONE XL Resistive Touchscreen GPIOs (GPG12-15):
++	 * GPG12: XPON, GPG13: XMON, GPG14: YPON, GPG15: YMON
++	 * Managed by tomtom_ts driver via standard GPIO direction toggling.
++	 * Disable internal pull-ups so they don't skew analog resistance readings.
++	 */
++	s3c_gpio_cfgpin(S3C2410_GPG(12), S3C_GPIO_INPUT);
++	s3c_gpio_cfgpin(S3C2410_GPG(13), S3C_GPIO_INPUT);
++	s3c_gpio_cfgpin(S3C2410_GPG(14), S3C_GPIO_INPUT);
++	s3c_gpio_cfgpin(S3C2410_GPG(15), S3C_GPIO_INPUT);
++
++	{
++		unsigned int gpgup = __raw_readl(S3C2410_GPGUP);
++		gpgup |= (1 << 12) | (1 << 13) | (1 << 14) | (1 << 15);
++		__raw_writel(gpgup, S3C2410_GPGUP);
++	}
++
++	/* Reference voltage for ADC (AIN4_PWR): GPA12 -> 1 */
++	s3c_gpio_cfgpin(S3C2410_GPA(12), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPA(12), 1);
++
++	/* Enable ADC peripheral clock in CLKCON (bit 24 on S3C2412) */
++	__raw_writel(__raw_readl(S3C2410_CLKCON) | (1 << 24), S3C2410_CLKCON);
++
++	/* LCD_RESET: GPF5 -> 1 (Deassert Reset) */
++	s3c_gpio_cfgpin(S3C2410_GPF(5), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPF(5), 1);
++
++	/* Backlight: GPB0 -> 1 (Backlight ON) */
++	s3c_gpio_cfgpin(S3C2410_GPB(0), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPB(0), 1);
++
++	/* Configure SDI / MMC pins (GPE5..GPE10) */
++	s3c_gpio_cfgpin_range(S3C2410_GPE(5), 6, S3C_GPIO_SFN(2));
++
++	pr_notice("TT: step4 audio\n");
++	/* 4. Audio & Codec */
++	/* Audio amplifier enable: GPF6 -> 1 */
++	s3c_gpio_cfgpin(S3C2410_GPF(6), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPF(6), 1);
++
++	/* DAC power: GPE13 -> 1 */
++	s3c_gpio_cfgpin(S3C2410_GPE(13), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPE(13), 1);
++
++	/* Configure I2S pins (GPE0..GPE4) */
++	s3c_gpio_cfgpin_range(S3C2410_GPE(0), 5, S3C_GPIO_SFN(2));
++
++	pr_notice("TT: step5 bt & uarts\n");
++	/* UART0: GPH2 (TXD0), GPH3 (RXD0) */
++	s3c_gpio_cfgpin(S3C2410_GPH(2), S3C_GPIO_SFN(2));
++	s3c_gpio_cfgpin(S3C2410_GPH(3), S3C_GPIO_SFN(2));
++
++	/* UART1: GPH4 (TXD1), GPH5 (RXD1) */
++	s3c_gpio_cfgpin(S3C2410_GPH(4), S3C_GPIO_SFN(2));
++	s3c_gpio_cfgpin(S3C2410_GPH(5), S3C_GPIO_SFN(2));
++
++	/* UART2: GPH6 (TXD2), GPH7 (RXD2) - CSR BlueCore 3 Bluetooth */
++	s3c_gpio_cfgpin(S3C2410_GPH(6), S3C_GPIO_SFN(2));
++	s3c_gpio_cfgpin(S3C2410_GPH(7), S3C_GPIO_SFN(2));
++	s3c_gpio_setpull(S3C2410_GPH(7), S3C_GPIO_PULL_UP);
++
++	/* BT Flow control lines:
++	 * CTS_BT (GPG0): Host output driven LOW (0V = clear to send to CSR)
++	 * RTS_BT (GPG1): CSR output -> Host input
++	 */
++	s3c_gpio_cfgpin(S3C2410_GPG(0), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPG(0), 0);
++	s3c_gpio_setpull(S3C2410_GPG(0), S3C_GPIO_PULL_NONE);
++
++	s3c_gpio_cfgpin(S3C2410_GPG(1), S3C_GPIO_INPUT);
++	s3c_gpio_setpull(S3C2410_GPG(1), S3C_GPIO_PULL_NONE);
++
++	/* BT_RESET: GPA19 -> 1 (Release Reset / Normal Operation) */
++	s3c_gpio_cfgpin(S3C2410_GPA(19), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPA(19), 1);
++
++	/* 6. GPS chip held in reset, but GPF4 power rail enabled for BT / 26MHz clock
++	 * GPS_RESET: GPC5 -> 0 (asserted; active-low on Limerick keeps SiRF chip in reset) */
++	s3c_gpio_cfgpin(S3C2410_GPC(5), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPC(5), 0);
++
++	/* GPS_POWERON_OUT: GPF3 -> 0 */
++	s3c_gpio_cfgpin(S3C2410_GPF(3), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPF(3), 0);
++
++	/* GPS_ON / RF_ON: GPF4 -> 1 (enables RF power rail and 26MHz TCXO clock) */
++	s3c_gpio_cfgpin(S3C2410_GPF(4), S3C_GPIO_OUTPUT);
++	gpio_set_value(S3C2410_GPF(4), 1);
++
++	pr_notice("TT: step7 platdata\n");
++	/* Register Platform Data */
++	gpiod_add_lookup_table(&tomtom_mci_gpio_table);
++	s3c24xx_mci_set_platdata(&tomtom_mci_pdata);
++
++	gpiod_add_lookup_table(&tomtom_udc_gpio_table);
++	s3c24xx_udc_set_platdata(&tomtom_udc_cfg);
++
++	s3c24xx_fb_set_platdata(&tomtom_fb_info);
++	s3c24xx_ts_set_platdata(&tomtom_ts_cfg);
++	s3c_device_ts.dev.parent = NULL;
++
++	s3c_i2c0_set_platdata(NULL);
++
++	gpiod_add_lookup_table(&tomtom_wm8711_spi_gpios);
++	spi_register_board_info(tomtom_wm8711_spi_dev,
++				ARRAY_SIZE(tomtom_wm8711_spi_dev));
++
++	tomtom_audio_board_setup();
++
++	pr_notice("TT: step8 adding devices\n");
++	{
++		int i;
++		for (i = 0; i < ARRAY_SIZE(tomtom_devices); i++) {
++			int ret = platform_device_register(tomtom_devices[i]);
++			if (ret)
++				pr_err("TT: device %s register failed: %d\n", tomtom_devices[i]->name, ret);
++			else
++				pr_notice("TT: device %s registered ok\n", tomtom_devices[i]->name);
++		}
++	}
++	pm_power_off = tomtom_power_off;
++	register_restart_handler(&tomtom_restart_nb);
++}
++
++MACHINE_START(TOMTOMGO, "TomTom GO")
++	.atag_offset	= 0x0,
++	.nr_irqs	= (S3C2410_IRQSUB(28) + 1),
++	.fixup		= tomtom_fixup,
++	.init_irq	= s3c2412_init_irq,
++	.map_io		= tomtom_map_io,
++	.init_machine	= tomtom_machine_init,
++	.init_time	= tomtom_init_time,
++	.restart	= tomtom_restart,
++MACHINE_END
++
++static int __init tt_alive_arch(void) { pr_notice("TT: alive at arch_initcall\n"); return 0; }
++arch_initcall(tt_alive_arch);
++static int __init tt_alive_subsys(void) { pr_notice("TT: alive at subsys_initcall\n"); return 0; }
++subsys_initcall(tt_alive_subsys);
++static int __init tt_alive_fs(void) { pr_notice("TT: alive at fs_initcall\n"); return 0; }
++fs_initcall(tt_alive_fs);
++static int __init tt_alive_device(void) { pr_notice("TT: alive at device_initcall\n"); return 0; }
++device_initcall(tt_alive_device);
++static int __init tt_alive_late(void)
++{
++	pr_notice("TT: alive at late_initcall, unregistering ttfb console for userspace GUI\n");
++	ttfb_active = false;
++	unregister_console(&ttfb_console);
++	return 0;
++}
++late_initcall_sync(tt_alive_late);
+--- a/sound/soc/samsung/tomtom_wm8711.c
++++ b/sound/soc/samsung/tomtom_wm8711.c
+@@ -0,0 +1,277 @@
++// SPDX-License-Identifier: GPL-2.0
++//
++// ASoC machine driver for TomTom ONE XL (Limerick)
++// Samsung S3C2412 + Wolfson WM8711
++//
++// Hardware behavior is derived from TomTom's Linux 2.6 GPL sound driver.
++
++#include <linux/module.h>
++#include <linux/delay.h>
++#include <linux/clk.h>
++#include <linux/platform_device.h>
++
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++#include <asm/mach-types.h>
++
++#include "s3c2412-i2s.h"
++#include "../codecs/wm8711.h"
++
++static int tomtom_calc_rate(struct s3c_i2sv2_rate_calc *best,
++			    unsigned int rate, struct clk *clk)
++{
++	static const unsigned int fs_table[] = { 256, 384 };
++	unsigned long clkrate = clk_get_rate(clk);
++	unsigned int best_diff = ~0U;
++	unsigned int i;
++
++	best->fs_div = 0;
++	best->clk_div = 0;
++
++	for (i = 0; i < ARRAY_SIZE(fs_table); i++) {
++		unsigned int fs = fs_table[i];
++		unsigned long denom = (unsigned long)fs * rate;
++		unsigned int div;
++		unsigned int actual;
++		unsigned int diff;
++
++		if (!denom)
++			continue;
++
++		/* Same nearest-divider policy as TomTom's 2.6 iis-s3c2412.c. */
++		div = (clkrate + denom / 2) / denom;
++		if (div < 1 || div > 32)
++			continue;
++
++		actual = clkrate / ((unsigned long)fs * div);
++		diff = (actual > rate) ? actual - rate : rate - actual;
++
++		if (diff < best_diff) {
++			best_diff = diff;
++			best->fs_div = fs;
++			best->clk_div = div;
++		}
++	}
++
++	if (!best->fs_div)
++		return -EINVAL;
++
++	pr_info("TomTom ASoC: PCLK=%lu requested=%u fs=%u div=%u real=%lu\n",
++		clkrate, rate, best->fs_div, best->clk_div,
++		clkrate / ((unsigned long)best->fs_div * best->clk_div));
++
++	return 0;
++}
++
++static int tomtom_wm8711_hw_params(struct snd_pcm_substream *substream,
++				    struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = asoc_substream_to_rtd(substream);
++	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
++	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
++	struct s3c_i2sv2_rate_calc div;
++	struct clk *iis_clk;
++	unsigned int mclk;
++	int ret;
++
++	/*
++	 * Limerick's original 2.6 driver uses the S3C2412 "iis" PCLK source,
++	 * with the CPU as I2S master and WM8711 as slave.
++	 */
++	ret = snd_soc_dai_set_sysclk(cpu_dai, S3C2412_CLKSRC_PCLK, 0,
++				     SND_SOC_CLOCK_IN);
++	if (ret < 0)
++		return ret;
++
++	iis_clk = s3c_i2sv2_get_clock(cpu_dai);
++	if (IS_ERR(iis_clk))
++		return PTR_ERR(iis_clk);
++
++	ret = tomtom_calc_rate(&div, params_rate(params), iis_clk);
++	if (ret)
++		return ret;
++
++	/*
++	 * WM8711 only has coefficient entries for nominal standard MCLK/rate
++	 * pairs.  For the TomTom hardware-facing 42968 Hz mode, keep the CPU
++	 * divider calculation at the real rate but present the codec with the
++	 * nominal 44.1k/256fs MCLK identity.  The codec register recipe is the
++	 * original TomTom 44.1k-family setup; ALSA userspace performs 44100 ->
++	 * 42968 resampling before samples reach this DAI.
++	 */
++	if (params_rate(params) == 42968)
++		mclk = 44100 * div.fs_div;
++	else
++		mclk = params_rate(params) * div.fs_div;
++
++	ret = snd_soc_dai_set_sysclk(codec_dai, WM8711_SYSCLK, mclk,
++				     SND_SOC_CLOCK_IN);
++	if (ret < 0)
++		return ret;
++
++	ret = snd_soc_dai_set_clkdiv(cpu_dai, S3C2412_DIV_RCLK, div.fs_div);
++	if (ret < 0)
++		return ret;
++
++	ret = snd_soc_dai_set_clkdiv(cpu_dai, S3C2412_DIV_PRESCALER,
++				     div.clk_div - 1);
++	if (ret < 0)
++		return ret;
++
++	return 0;
++}
++
++
++extern void tomtom_audio_set_amp(bool on);
++extern void tomtom_audio_set_dac_power(bool on);
++
++static struct snd_soc_component *tomtom_codec_component;
++
++static int tomtom_speaker_event(struct snd_soc_dapm_widget *w,
++					 struct snd_kcontrol *k, int event)
++{
++	if (SND_SOC_DAPM_EVENT_ON(event)) {
++		unsigned int vol = 117;
++
++		/*
++		 * Hardware oracle: TomTom 2.6 wm8711.c programs this exact
++		 * register image for Limerick before playback.
++		 */
++		if (tomtom_codec_component) {
++			unsigned int cached =
++				snd_soc_component_read(tomtom_codec_component,
++						       WM8711_LOUT1V) & 0x7f;
++
++			if (cached <= 121)
++				vol = cached;
++
++			snd_soc_component_write(tomtom_codec_component,
++						WM8711_LOUT1V, 0x0180 | vol);
++			snd_soc_component_write(tomtom_codec_component,
++						WM8711_APANA, 0x0010);
++			snd_soc_component_write(tomtom_codec_component,
++						WM8711_APDIGI, 0x0000);
++			snd_soc_component_write(tomtom_codec_component,
++						WM8711_PWR, 0x0060);
++			snd_soc_component_write(tomtom_codec_component,
++						WM8711_IFACE, 0x0002);
++			snd_soc_component_write(tomtom_codec_component,
++						WM8711_SRATE, 0x0020);
++			snd_soc_component_write(tomtom_codec_component,
++						WM8711_ACTIVE, 0x0001);
++
++			pr_info("TomTom ASoC: 2.6 WM8711 oracle R2=%03x R4=010 R5=000 R6=060 R7=002 R8=020 R9=001\n",
++				0x0180 | vol);
++		}
++
++		tomtom_audio_set_amp(true);
++		pr_info("TomTom ASoC: speaker amplifier ON\n");
++	} else {
++		tomtom_audio_set_amp(false);
++		pr_info("TomTom ASoC: speaker amplifier OFF\n");
++	}
++
++	return 0;
++}
++
++static const struct snd_soc_dapm_widget tomtom_dapm_widgets[] = {
++	SND_SOC_DAPM_SPK("TomTom Speaker", tomtom_speaker_event),
++};
++
++static const struct snd_soc_dapm_route tomtom_audio_routes[] = {
++	{ "TomTom Speaker", NULL, "LOUT" },
++	{ "TomTom Speaker", NULL, "ROUT" },
++};
++
++
++static int tomtom_wm8711_runtime_init(struct snd_soc_pcm_runtime *rtd)
++{
++	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
++	struct snd_soc_component *component = codec_dai->component;
++	const unsigned int vol = 110;
++
++	tomtom_codec_component = component;
++
++	/*
++	 * TomTom's original 2.6 WM8711 driver exposes volume 0..121 and
++	 * explicitly unmutes R5.  The generic 6.1 reset defaults leave
++	 * LOUT/ROUT near the floor, effectively inaudible.
++	 *
++	 * Start conservatively at 110/121 (~11 dB below TomTom max).
++	 * The userspace VOL-/VOL+ controls can adjust this at runtime.
++	 */
++	snd_soc_component_write(component, WM8711_LOUT1V, 0x0100 | vol);
++	snd_soc_component_write(component, WM8711_ROUT1V, 0x0100 | vol);
++	snd_soc_component_update_bits(component, WM8711_APDIGI, 0x0008, 0x0000);
++
++	pr_info("TomTom ASoC: WM8711 startup volume=%u/121, digital unmute\n",
++		vol);
++	return 0;
++}
++
++static const struct snd_soc_ops tomtom_wm8711_ops = {
++	.hw_params = tomtom_wm8711_hw_params,
++};
++
++SND_SOC_DAILINK_DEFS(tomtom_wm8711,
++	DAILINK_COMP_ARRAY(COMP_CPU("s3c2412-iis")),
++	DAILINK_COMP_ARRAY(COMP_CODEC("spi3.0", "wm8711-hifi")),
++	DAILINK_COMP_ARRAY(COMP_PLATFORM("s3c2412-iis")));
++
++static struct snd_soc_dai_link tomtom_wm8711_link = {
++	.name = "TomTom-WM8711",
++	.stream_name = "TomTom PCM",
++	.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
++		   SND_SOC_DAIFMT_CBS_CFS,
++	.init = tomtom_wm8711_runtime_init,
++	.ops = &tomtom_wm8711_ops,
++	SND_SOC_DAILINK_REG(tomtom_wm8711),
++};
++
++static struct snd_soc_card tomtom_wm8711_card = {
++	.name = "TomTom-ONE-XL",
++	.owner = THIS_MODULE,
++	.dai_link = &tomtom_wm8711_link,
++	.num_links = 1,
++	.dapm_widgets = tomtom_dapm_widgets,
++	.num_dapm_widgets = ARRAY_SIZE(tomtom_dapm_widgets),
++	.dapm_routes = tomtom_audio_routes,
++	.num_dapm_routes = ARRAY_SIZE(tomtom_audio_routes),
++};
++
++static struct platform_device *tomtom_snd_device;
++
++static int __init tomtom_wm8711_init(void)
++{
++	int ret;
++
++	if (!machine_is_tomtomgo())
++		return 0;
++
++	pr_info("TomTom ONE XL WM8711 ASoC machine driver\n");
++
++	tomtom_snd_device = platform_device_alloc("soc-audio", -1);
++	if (!tomtom_snd_device)
++		return -ENOMEM;
++
++	platform_set_drvdata(tomtom_snd_device, &tomtom_wm8711_card);
++
++	ret = platform_device_add(tomtom_snd_device);
++	if (ret)
++		platform_device_put(tomtom_snd_device);
++
++	return ret;
++}
++module_init(tomtom_wm8711_init);
++
++static void __exit tomtom_wm8711_exit(void)
++{
++	if (tomtom_snd_device)
++		platform_device_unregister(tomtom_snd_device);
++}
++module_exit(tomtom_wm8711_exit);
++
++MODULE_AUTHOR("OpenAI / TomTom 6.1 port");
++MODULE_DESCRIPTION("TomTom ONE XL S3C2412 + WM8711 ASoC machine driver");
++MODULE_LICENSE("GPL");

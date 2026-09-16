@@ -1,0 +1,22 @@
+--- a/src/a2dp-sbc.c
++++ b/src/a2dp-sbc.c
+@@ -535,6 +535,10 @@
+ 
+ 	debug("SBC: Selected bit-pool range: [%u, %u]",
+ 			conf->min_bitpool, conf->max_bitpool);
++	if (sep->config.type == A2DP_SINK)
++		info("TomTom SBC sink negotiated: sampling=%#x channel=%#x min_bitpool=%u max_bitpool=%u",
++				conf->sampling_freq, conf->channel_mode,
++				conf->min_bitpool, conf->max_bitpool);
+ 
+ 	return A2DP_CHECK_OK;
+ }
+@@ -659,7 +663,7 @@
+ 				SBC_ALLOCATION_SNR |
+ 				SBC_ALLOCATION_LOUDNESS,
+ 			.min_bitpool = SBC_MIN_BITPOOL,
+-			.max_bitpool = SBC_MAX_BITPOOL,
++			.max_bitpool = 35,
+ 		},
+ 	},
+ 	.configuration_select = a2dp_sbc_configuration_select,
