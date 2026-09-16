@@ -1,0 +1,108 @@
+--- a/src/a2dp-sbc.c
++++ b/src/a2dp-sbc.c
+@@ -20,6 +20,7 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ #include <string.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include <glib.h>
+@@ -284,6 +285,12 @@
+ 	return NULL;
+ }
+ 
++static long long tomtom_timespec_diff_us(
++		const struct timespec *a, const struct timespec *b) {
++	return (long long)(b->tv_sec - a->tv_sec) * 1000000LL +
++			(long long)(b->tv_nsec - a->tv_nsec) / 1000LL;
++}
++
+ __attribute__ ((weak))
+ void *a2dp_sbc_dec_thread(struct ba_transport_pcm *t_pcm) {
+ 
+@@ -324,6 +331,18 @@
+ 	/* RTP clock frequency equal to audio samplerate */
+ 	rtp_state_init(&rtp, samplerate, samplerate);
+ 
++	/* TomTom ONE XL receive/decode telemetry. Keep diagnostics aggregated so
++	 * the measurement itself does not become a meaningful workload. */
++	struct timespec tt_window_start = { 0 };
++	struct timespec tt_prev_rx = { 0 };
++	uint32_t tt_prev_rtp_ts = 0;
++	unsigned int tt_pkts = 0;
++	unsigned int tt_missing = 0;
++	uint64_t tt_proc_sum_us = 0;
++	uint64_t tt_audio_sum_us = 0;
++	long long tt_proc_max_us = 0;
++	long long tt_gap_max_us = 0;
++
+ #if DEBUG
+ 	uint16_t sbc_bitpool = 0;
+ #endif
+@@ -339,6 +358,17 @@
+ 			goto fail;
+ 		}
+ 
++		struct timespec tt_proc_start;
++		clock_gettime(CLOCK_MONOTONIC, &tt_proc_start);
++		if (tt_window_start.tv_sec == 0 && tt_window_start.tv_nsec == 0)
++			tt_window_start = tt_proc_start;
++		if (tt_prev_rx.tv_sec != 0 || tt_prev_rx.tv_nsec != 0) {
++			long long gap = tomtom_timespec_diff_us(&tt_prev_rx, &tt_proc_start);
++			if (gap > tt_gap_max_us)
++				tt_gap_max_us = gap;
++		}
++		tt_prev_rx = tt_proc_start;
++
+ 		const rtp_header_t *rtp_header = bt.data;
+ 		const rtp_media_header_t *rtp_media_header;
+ 		if ((rtp_media_header = rtp_a2dp_get_payload(rtp_header)) == NULL)
+@@ -346,6 +376,15 @@
+ 
+ 		int missing_rtp_frames = 0;
+ 		rtp_state_sync_stream(&rtp, rtp_header, &missing_rtp_frames, NULL);
++		if (missing_rtp_frames > 0)
++			tt_missing += (unsigned int)missing_rtp_frames;
++
++		uint32_t tt_rtp_ts = be32toh(rtp_header->timestamp);
++		if (tt_prev_rtp_ts != 0) {
++			uint32_t delta = tt_rtp_ts - tt_prev_rtp_ts;
++			tt_audio_sum_us += (uint64_t)delta * 1000000ULL / samplerate;
++		}
++		tt_prev_rtp_ts = tt_rtp_ts;
+ 
+ 		if (!ba_transport_pcm_is_active(t_pcm)) {
+ 			rtp.synced = false;
+@@ -386,6 +425,31 @@
+ 
+ 		}
+ 
++		struct timespec tt_proc_end;
++		clock_gettime(CLOCK_MONOTONIC, &tt_proc_end);
++		long long tt_proc_us = tomtom_timespec_diff_us(&tt_proc_start, &tt_proc_end);
++		if (tt_proc_us > 0)
++			tt_proc_sum_us += (uint64_t)tt_proc_us;
++		if (tt_proc_us > tt_proc_max_us)
++			tt_proc_max_us = tt_proc_us;
++
++		if (++tt_pkts >= 128) {
++			long long tt_wall_us = tomtom_timespec_diff_us(&tt_window_start, &tt_proc_end);
++			warn("TomTom A2DP RXSTAT: pkts=%u missing=%u proc_avg_us=%llu proc_max_us=%lld audio_us=%llu wall_us=%lld gap_max_us=%lld",
++				tt_pkts, tt_missing,
++				(unsigned long long)(tt_proc_sum_us / tt_pkts),
++				tt_proc_max_us,
++				(unsigned long long)tt_audio_sum_us,
++				tt_wall_us, tt_gap_max_us);
++			tt_window_start = tt_proc_end;
++			tt_pkts = 0;
++			tt_missing = 0;
++			tt_proc_sum_us = 0;
++			tt_audio_sum_us = 0;
++			tt_proc_max_us = 0;
++			tt_gap_max_us = 0;
++		}
++
+ 	}
+ 
+ fail:
