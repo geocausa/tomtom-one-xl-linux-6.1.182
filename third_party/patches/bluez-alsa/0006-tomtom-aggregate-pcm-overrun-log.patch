@@ -1,0 +1,26 @@
+--- a/src/io.c
++++ b/src/io.c
+@@ -233,15 +233,16 @@
+ 			switch (errno) {
+ 			case EINTR:
+ 				continue;
+-			case EAGAIN:
+-				/* If the client is so slow that the FIFO fills up, then it
+-				 * is inevitable that audio frames will be eventually be
+-				 * dropped in the bluetooth controller if we block here.
+-				 * It is better that we discard frames here so that the
+-				 * decoder is not interrupted. */
+-				warn("Dropping PCM frames: %s", "PCM overrun");
++			case EAGAIN: {
++				/* Preserve BlueALSA's drop-on-full behavior, but aggregate the
++				 * TomTom diagnostic so logging itself does not become load. */
++				static unsigned int tt_pcm_overruns = 0;
++				tt_pcm_overruns++;
++				if (tt_pcm_overruns == 1 || (tt_pcm_overruns % 32) == 0)
++					warn("TomTom PCM overrun total=%u", tt_pcm_overruns);
+ 				ret = len;
+ 				break;
++			}
+ 			case EPIPE:
+ 				/* This errno value will be received only, when the SIGPIPE
+ 				 * signal is caught, blocked or ignored. */

@@ -1,0 +1,74 @@
+--- a/utils/aplay/aplay.c
++++ b/utils/aplay/aplay.c
+@@ -27,7 +27,9 @@
+ #include <string.h>
+ #include <syslog.h>
+ #include <sys/eventfd.h>
++#include <sys/ioctl.h>
+ #include <sys/param.h>
++#include <time.h>
+ #include <unistd.h>
+ 
+ #include <alsa/asoundlib.h>
+@@ -536,6 +538,11 @@
+ 	debug("Exiting IO worker %s", worker->addr);
+ }
+ 
++static long long tomtom_timespec_diff_us(const struct timespec *a, const struct timespec *b) {
++	return (long long)(b->tv_sec - a->tv_sec) * 1000000LL +
++			(long long)(b->tv_nsec - a->tv_nsec) / 1000LL;
++}
++
+ static void *io_worker_routine(struct io_worker *w) {
+ 
+ 	snd_pcm_format_t pcm_format = bluealsa_get_snd_pcm_format(&w->ba_pcm);
+@@ -600,6 +607,12 @@
+ 
+ 	int timeout = -1;
+ 
++	/* TomTom ONE XL: measurement-only consumer telemetry. */
++	unsigned int tt_write_count = 0;
++	unsigned long long tt_write_sum_us = 0;
++	long long tt_write_max_us = 0;
++	int tt_pipe_max_bytes = 0;
++
+ 	debug("Starting IO loop");
+ 	for (;;) {
+ 
+@@ -792,6 +805,8 @@
+ 
+ retry_alsa_write:
+ 		frames = samples / w->ba_pcm.channels;
++		struct timespec tt_write_start, tt_write_end;
++		clock_gettime(CLOCK_MONOTONIC, &tt_write_start);
+ 		if ((frames = snd_pcm_writei(w->snd_pcm, buffer.data, frames)) < 0)
+ 			switch (-frames) {
+ 			case EINTR:
+@@ -805,6 +820,27 @@
+ 				goto close_alsa;
+ 			}
+ 
++		clock_gettime(CLOCK_MONOTONIC, &tt_write_end);
++		long long tt_write_us = tomtom_timespec_diff_us(&tt_write_start, &tt_write_end);
++		if (tt_write_us > 0)
++			tt_write_sum_us += (unsigned long long)tt_write_us;
++		if (tt_write_us > tt_write_max_us)
++			tt_write_max_us = tt_write_us;
++		int tt_pipe_bytes = 0;
++		if (ioctl(w->ba_pcm_fd, FIONREAD, &tt_pipe_bytes) == 0 &&
++				tt_pipe_bytes > tt_pipe_max_bytes)
++			tt_pipe_max_bytes = tt_pipe_bytes;
++		if (++tt_write_count >= 128) {
++			warn("TomTom APLAYSTAT: writes=%u write_avg_us=%llu write_max_us=%lld pipe_max_bytes=%d",
++				tt_write_count,
++				(unsigned long long)(tt_write_sum_us / tt_write_count),
++				tt_write_max_us, tt_pipe_max_bytes);
++			tt_write_count = 0;
++			tt_write_sum_us = 0;
++			tt_write_max_us = 0;
++			tt_pipe_max_bytes = 0;
++		}
++
+ 		/* move leftovers to the beginning and reposition tail */
+ 		ffb_shift(&buffer, frames * w->ba_pcm.channels);
+ 
