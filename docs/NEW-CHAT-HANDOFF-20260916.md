@@ -287,3 +287,53 @@ and:
 `/home/macbuntu/Documents/ttwork/tomtom-one-xl-linux6`
 
 Use macbuntu only. First verify Git/device state and latest logs. Preserve modern10 reboot-good behavior and modern11 local-ALSA-good evidence. Current blocker is multi-second Bluetooth A2DP delay/cadence above ALSA. The local 44.1k -> ttbt -> 42.968k ALSA path is proven steady with 0 XRUNs and ~100 ms drain, so focus on BlueALSA/bluealsa-aplay/BT scheduling and the charger-vs-battery power clue. Do not hide the issue with multi-second buffering. Preserve all rollback images/checkpoints.
+
+---
+
+## ADDENDUM — newer canonical work discovered while sealing handoff
+
+Two later commits exist and should be considered current canonical investigation work:
+
+### 89bf84e — Instrument and prioritize Bluetooth audio pipeline
+Adds:
+- BlueALSA pipe-headroom patch refinement: request exactly 32768-byte PCM handoff capacity.
+- A2DP socket buffer logging patch (SO_RCVBUF / SO_SNDBUF / MTUs).
+- modern12 startup script with:
+  - BlueALSA `--io-rt-priority=5`
+  - bluealsa-aplay launched through `tt-rt-exec` at SCHED_FIFO priority 6 when available
+  - CPU monitor support
+- modern12 quiesce script aware of CPU monitor.
+- diagnostic sources:
+  - userspace/diagnostics/tt_rt_exec.c
+  - userspace/diagnostics/ttcpumon.c
+
+These were created to test whether ARM926 scheduling/CPU headroom is the reason BlueALSA falls behind.
+
+### 777c0fc — Instrument TomTom A2DP receive timing
+Adds BlueALSA patch:
+`third_party/patches/bluez-alsa/0004-tomtom-a2dp-rx-timing-stats.patch`
+
+It aggregates A2DP receive/decode telemetry every 128 packets:
+- packet count
+- missing RTP frames
+- average/max processing time
+- audio duration represented by RTP timestamps
+- wall-clock duration
+- largest inter-packet gap
+
+This is intended to distinguish:
+- insufficient CPU/decode throughput
+- transport gaps / retransmission behavior
+- consumer-side backlog
+
+### Build script state
+`tools/rebuild-bluealsa.sh` was updated to apply **all** TomTom BlueALSA patches in lexical order from:
+`third_party/patches/bluez-alsa/*.patch`
+
+The canonical BlueALSA patch series therefore now includes at least:
+- 0001 bitpool35 + negotiation log
+- 0002 bounded PCM pipe headroom
+- 0003 A2DP socket-buffer logging
+- 0004 A2DP receive-timing statistics
+
+New chat should inspect current Git log/status before rebuilding or staging anything.
