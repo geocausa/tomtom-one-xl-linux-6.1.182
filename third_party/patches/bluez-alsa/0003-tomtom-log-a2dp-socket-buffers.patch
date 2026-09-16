@@ -1,0 +1,23 @@
+--- a/src/ba-transport.c
++++ b/src/ba-transport.c
+@@ -312,6 +312,20 @@
+ 	size_t size = t->mtu_write * 3;
+ 	if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, sizeof(size)) == -1)
+ 		warn("Couldn't set socket output buffer size: %s", strerror(errno));
++
++	/* TomTom low-latency diagnostics: for an A2DP sink the receive socket
++	 * may otherwise hold seconds of compressed SBC when the ARM926 falls
++	 * behind. Record the real kernel buffer sizes before changing policy. */
++	int rcvbuf = 0;
++	int sndbuf = 0;
++	socklen_t optlen = sizeof(rcvbuf);
++	if (getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &optlen) == -1)
++		warn("TomTom couldn't read A2DP SO_RCVBUF: %s", strerror(errno));
++	optlen = sizeof(sndbuf);
++	if (getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, &optlen) == -1)
++		warn("TomTom couldn't read A2DP SO_SNDBUF: %s", strerror(errno));
++	warn("TomTom A2DP socket buffers: rcv=%d snd=%d mtu_read=%u mtu_write=%u",
++			rcvbuf, sndbuf, t->mtu_read, t->mtu_write);
+ 
+ 	if (ioctl(fd, TIOCOUTQ, &t->a2dp.bt_fd_coutq_init) == -1)
+ 		warn("Couldn't get socket queued bytes: %s", strerror(errno));

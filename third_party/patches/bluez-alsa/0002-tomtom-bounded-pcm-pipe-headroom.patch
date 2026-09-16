@@ -10,7 +10,7 @@
 +	 * term scheduling headroom without creating a seconds-long audio queue. */
 +	int pipe_size_before = fcntl(pcm_fds[0], F_GETPIPE_SZ);
 +	int pipe_size_after = pipe_size_before;
-+	if (pipe_size_before > 0 && pipe_size_before < 32768) {
++	if (pipe_size_before > 0 && pipe_size_before != 32768) {
 +		int rv = fcntl(pcm_fds[0], F_SETPIPE_SZ, 32768);
 +		if (rv != -1)
 +			pipe_size_after = rv;
