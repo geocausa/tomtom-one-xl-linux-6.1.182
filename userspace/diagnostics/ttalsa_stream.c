@@ -23,67 +23,82 @@ static int setup_pcm(snd_pcm_t **out, snd_pcm_uframes_t *buffer_frames,
     snd_pcm_t *pcm = NULL;
     snd_pcm_hw_params_t *hw;
     snd_pcm_sw_params_t *sw;
-    unsigned int rate = APP_RATE;
     unsigned int buffer_time = BUFFER_US;
     unsigned int period_time = PERIOD_US;
-    int dir = 0;
+    int dir;
     int err;
+    const char *stage = "unknown";
 
     snd_pcm_hw_params_alloca(&hw);
     snd_pcm_sw_params_alloca(&sw);
 
-    if ((err = snd_pcm_open(&pcm, "ttbt", SND_PCM_STREAM_PLAYBACK, 0)) < 0)
-        goto fail;
-    if ((err = snd_pcm_hw_params_any(pcm, hw)) < 0)
-        goto fail;
-    if ((err = snd_pcm_hw_params_set_access(pcm, hw,
-                    SND_PCM_ACCESS_RW_INTERLEAVED)) < 0)
-        goto fail;
-    if ((err = snd_pcm_hw_params_set_format(pcm, hw,
-                    SND_PCM_FORMAT_S16_LE)) < 0)
-        goto fail;
-    if ((err = snd_pcm_hw_params_set_channels(pcm, hw, CHANNELS)) < 0)
-        goto fail;
-    if ((err = snd_pcm_hw_params_set_rate_near(pcm, hw, &rate, &dir)) < 0)
-        goto fail;
-    if ((err = snd_pcm_hw_params_set_buffer_time_near(
-                    pcm, hw, &buffer_time, &dir)) < 0)
-        goto fail;
-    if ((err = snd_pcm_hw_params_set_period_time_near(
-                    pcm, hw, &period_time, &dir)) < 0)
-        goto fail;
-    if ((err = snd_pcm_hw_params(pcm, hw)) < 0)
-        goto fail;
-    if ((err = snd_pcm_get_params(pcm, buffer_frames, period_frames)) < 0)
-        goto fail;
+#define TRY_STAGE(name, expr) do {         stage = (name);         if ((err = (expr)) != 0)             goto fail;     } while (0)
 
-    if ((err = snd_pcm_sw_params_current(pcm, sw)) < 0)
-        goto fail;
+    TRY_STAGE("open ttbt",
+        snd_pcm_open(&pcm, "ttbt", SND_PCM_STREAM_PLAYBACK, 0));
+    TRY_STAGE("hw_params_any",
+        snd_pcm_hw_params_any(pcm, hw));
+    TRY_STAGE("set_access RW_INTERLEAVED",
+        snd_pcm_hw_params_set_access(pcm, hw,
+            SND_PCM_ACCESS_RW_INTERLEAVED));
+    TRY_STAGE("set_format S16_LE",
+        snd_pcm_hw_params_set_format(pcm, hw,
+            SND_PCM_FORMAT_S16_LE));
+    TRY_STAGE("set_channels 2",
+        snd_pcm_hw_params_set_channels(pcm, hw, CHANNELS));
+
+    /* Match BlueALSA's working setup exactly: exact app rate, then period
+     * time, then buffer time. ALSA plug performs the 44.1k -> 42.968k
+     * conversion configured in /etc/asound.conf. */
+    TRY_STAGE("set_rate 44100",
+        snd_pcm_hw_params_set_rate(pcm, hw, APP_RATE, 0));
+
+    dir = 0;
+    TRY_STAGE("set_period_time_near 20000us",
+        snd_pcm_hw_params_set_period_time_near(
+            pcm, hw, &period_time, &dir));
+
+    dir = 0;
+    TRY_STAGE("set_buffer_time_near 100000us",
+        snd_pcm_hw_params_set_buffer_time_near(
+            pcm, hw, &buffer_time, &dir));
+
+    TRY_STAGE("apply hw_params",
+        snd_pcm_hw_params(pcm, hw));
+    TRY_STAGE("get negotiated params",
+        snd_pcm_get_params(pcm, buffer_frames, period_frames));
+
+    TRY_STAGE("sw_params_current",
+        snd_pcm_sw_params_current(pcm, sw));
 
     snd_pcm_uframes_t threshold =
         (*buffer_frames / *period_frames) * *period_frames;
-    if ((err = snd_pcm_sw_params_set_start_threshold(pcm, sw, threshold)) < 0)
-        goto fail;
-    if ((err = snd_pcm_sw_params_set_avail_min(pcm, sw, *period_frames)) < 0)
-        goto fail;
-    if ((err = snd_pcm_sw_params(pcm, sw)) < 0)
-        goto fail;
-    if ((err = snd_pcm_prepare(pcm)) < 0)
-        goto fail;
+    TRY_STAGE("set start_threshold",
+        snd_pcm_sw_params_set_start_threshold(pcm, sw, threshold));
+    TRY_STAGE("set avail_min",
+        snd_pcm_sw_params_set_avail_min(pcm, sw, *period_frames));
+    TRY_STAGE("apply sw_params",
+        snd_pcm_sw_params(pcm, sw));
+    TRY_STAGE("prepare",
+        snd_pcm_prepare(pcm));
 
-    printf("PCM opened: app_rate=%u actual_app_rate=%u buffer_us=%u period_us=%u "
-           "buffer_frames=%lu period_frames=%lu\n",
-           APP_RATE, rate, buffer_time, period_time,
-           (unsigned long)*buffer_frames, (unsigned long)*period_frames);
+    printf("PCM opened: app_rate=%u buffer_us=%u period_us=%u "
+           "buffer_frames=%lu period_frames=%lu start_threshold=%lu\n",
+           APP_RATE, buffer_time, period_time,
+           (unsigned long)*buffer_frames, (unsigned long)*period_frames,
+           (unsigned long)threshold);
 
     *out = pcm;
     return 0;
 
 fail:
-    fprintf(stderr, "ALSA setup failed: %s\n", snd_strerror(err));
+    fprintf(stderr, "ALSA setup failed at [%s]: %s (%d)\n",
+            stage, snd_strerror(err), err);
     if (pcm != NULL)
         snd_pcm_close(pcm);
     return -1;
+
+#undef TRY_STAGE
 }
 
 int main(void) {
