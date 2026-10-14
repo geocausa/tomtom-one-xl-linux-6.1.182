@@ -4,9 +4,10 @@
  *
  * Applications Included:
  * 1. CALIBRATE: 4-point touch calibration with persistent /etc/pointercal & /sdcard/pointercal
- * 2. TERMINAL: System diagnostics, dmesg viewer, dynamic process list (/proc)
+ * 2. TOOLS: Terminal plus USB Network & SSH
  * 3. EXPLORER: Directory browser & text file viewer for rootfs and SD card
- * 4. POWER: System Power Management (Reboot, Power Off via GPE3 suicide, Cancel)
+ * 4. BLUETOOTH: A2DP sink manager with phone-controlled volume
+ * POWER: System Power Management (Reboot, Power Off via GPE3 suicide, Cancel)
  */
 
 #include "tinylib.h"
@@ -333,9 +334,9 @@ typedef struct {
 
 static Tile tiles[4] = {
     { 16, 38, 216, 104, "CALIBRATE", "4-Point Touch Setup", COLOR_CYAN, 0 },
-    { 248, 38, 216, 104, "TERMINAL", "Linux Shell & Logs", COLOR_ORANGE, 0 },
+    { 248, 38, 216, 104, "TOOLS", "Terminal & USB SSH", COLOR_ORANGE, 0 },
     { 16, 152, 216, 104, "EXPLORER", "Filesystem & SD Card", COLOR_GREEN, 0 },
-    { 248, 152, 216, 104, "BLUETOOTH", "Manager & Audio Sink", COLOR_PURPLE, 0 }
+    { 248, 152, 216, 104, "BLUETOOTH", "Wireless Audio Sink", COLOR_PURPLE, 0 }
 };
 
 static void draw_top_bar(void) {
@@ -1249,8 +1250,7 @@ static void show_power_menu(void) {
 /* APP 4: Bluetooth Manager & Wireless Audio Sink                            */
 /* ========================================================================= */
 static char bt_view_buf[1024];
-static int bt_volume = 110;
-static int bt_volume_initialized = 0;
+static char usb_view_buf[1024];
 
 static void bt_exec_cmd(const char *cmd) {
     int pid = sys_fork();
@@ -1262,6 +1262,191 @@ static void bt_exec_cmd(const char *cmd) {
         int status = 0;
         sys_wait4(pid, &status, 0, 0);
     }
+}
+
+static void draw_usb_screen(const char *action_status) {
+    draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
+
+    /* Top Header Bar */
+    draw_rect(0, 0, FB_WIDTH, 26, COLOR_PURPLE);
+    draw_string(10, 5, "USB NETWORK & SSH", COLOR_WHITE, COLOR_PURPLE);
+
+    /* Back Button: x = 410, y = 2, w = 65, h = 22 */
+    draw_rect(410, 2, 65, 22, COLOR_RED);
+    draw_string(425, 5, "BACK", COLOR_WHITE, COLOR_RED);
+
+    /* Button 1: START SSH (x: 10..210, y: 30..66) */
+    draw_rect(10, 32, 200, 32, COLOR_GREEN);
+    draw_string(45, 40, "START SSH", COLOR_BLACK, COLOR_GREEN);
+
+    /* Button 2: STOP SSH (x: 220..420, y: 30..66) */
+    draw_rect(220, 32, 200, 32, COLOR_RED);
+    draw_string(288, 40, "STOP SSH", COLOR_WHITE, COLOR_RED);
+
+    /* Central Display Box */
+    draw_rect(10, 70, 460, 162, COLOR_BLACK);
+    for (int b = 0; b < 460; b++) {
+        draw_pixel(10 + b, 70, COLOR_PURPLE);
+        draw_pixel(10 + b, 231, COLOR_PURPLE);
+    }
+    for (int b = 0; b < 162; b++) {
+        draw_pixel(10, 70 + b, COLOR_PURPLE);
+        draw_pixel(469, 70 + b, COLOR_PURPLE);
+    }
+
+    if (action_status && action_status[0]) {
+        draw_string(20, 76, action_status, COLOR_YELLOW, COLOR_BLACK);
+    }
+
+    int fd = sys_open("/tmp/usb_out.txt", O_RDONLY, 0);
+    int showed_content = 0;
+    if (fd >= 0) {
+        long n = sys_read(fd, usb_view_buf, sizeof(usb_view_buf) - 1);
+        sys_close(fd);
+        if (n > 0) {
+            usb_view_buf[n] = '\0';
+            int ly = 94;
+            char *p = usb_view_buf;
+            for (int i = 0; i < 8 && *p; i++) {
+                char line[60];
+                int lp = 0;
+                while (*p && *p != '\n' && lp < 56) line[lp++] = *p++;
+                if (*p == '\n') p++;
+                line[lp] = '\0';
+                draw_string(20, ly, line, COLOR_WHITE, COLOR_BLACK);
+                ly += 16;
+            }
+            showed_content = 1;
+        }
+    }
+
+    if (!showed_content) {
+        draw_string(20, 96,  "Device: 192.168.7.2 on usb0", COLOR_CYAN, COLOR_BLACK);
+        draw_string(20, 114, "PC: set your usb interface to 192.168.7.1", COLOR_CYAN, COLOR_BLACK);
+        draw_string(20, 132, "ssh -i key root@192.168.7.2", COLOR_GREEN, COLOR_BLACK);
+        draw_string(20, 150, "----------------------------------------------------", COLOR_GRAY, COLOR_BLACK);
+        draw_string(20, 168, "USB + SSH start automatically at boot.", COLOR_WHITE, COLOR_BLACK);
+        draw_string(20, 186, "Tap START SSH to restart them if needed.", COLOR_WHITE, COLOR_BLACK);
+    }
+
+    draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
+    draw_string(10, 246, "DEV 192.168.7.2 | PC 192.168.7.1", COLOR_GRAY, COLOR_TOPBAR);
+
+    fb_flip();
+}
+
+static void show_usb_menu(void) {
+    draw_usb_screen("Ready. USB networking starts at boot.");
+    sleep_ms(300);
+    reset_touch_state();
+
+    int px, py;
+    int running = 1;
+    while (running) {
+        int ret = poll_touch_click(&px, &py);
+        if (ret == 2) {
+            show_power_menu();
+            draw_usb_screen("Ready.");
+            reset_touch_state();
+            continue;
+        }
+        if (ret == 1) {
+            /* Back button (x: 405..480, y: 0..28) */
+            if (px >= 405 && py <= 28) {
+                running = 0;
+                break;
+            }
+
+            /* Button 1: START SSH (x: 10..210, y: 30..66) */
+            if (px >= 10 && px <= 210 && py >= 30 && py <= 66) {
+                draw_rect(10, 32, 200, 32, COLOR_YELLOW);
+                draw_string(45, 40, "STARTING...", COLOR_BLACK, COLOR_YELLOW);
+                fb_flip();
+
+                bt_exec_cmd("/usr/bin/usb_ssh.sh > /tmp/usb_out.txt 2>&1");
+                draw_usb_screen("SSH start requested.");
+                sleep_ms(200);
+                reset_touch_state();
+                continue;
+            }
+
+            /* Button 2: STOP SSH (x: 220..420, y: 30..66) */
+            if (px >= 220 && px <= 420 && py >= 30 && py <= 66) {
+                draw_rect(220, 32, 200, 32, COLOR_YELLOW);
+                draw_string(276, 40, "STOPPING...", COLOR_BLACK, COLOR_YELLOW);
+                fb_flip();
+
+                bt_exec_cmd("/usr/bin/usb_stop.sh > /tmp/usb_out.txt 2>&1");
+                draw_usb_screen("SSH stopped.");
+                sleep_ms(200);
+                reset_touch_state();
+                continue;
+            }
+        }
+        sleep_ms(20);
+    }
+    reset_touch_state();
+}
+
+static void draw_tools_screen(void) {
+    draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
+    draw_rect(0, 0, FB_WIDTH, 26, COLOR_ORANGE);
+    draw_string(10, 5, "TOOLS", COLOR_BLACK, COLOR_ORANGE);
+
+    draw_rect(410, 2, 65, 22, COLOR_RED);
+    draw_string(425, 5, "BACK", COLOR_WHITE, COLOR_RED);
+
+    draw_rect(16, 48, 216, 150, COLOR_DARKGRAY);
+    draw_rect(16, 48, 216, 6, COLOR_ORANGE);
+    draw_string(84, 92, "TERMINAL", COLOR_WHITE, COLOR_DARKGRAY);
+    draw_string(48, 122, "Linux Shell & Logs", COLOR_ORANGE, COLOR_DARKGRAY);
+
+    draw_rect(248, 48, 216, 150, COLOR_DARKGRAY);
+    draw_rect(248, 48, 216, 6, COLOR_PURPLE);
+    draw_string(304, 92, "USB + SSH", COLOR_WHITE, COLOR_DARKGRAY);
+    draw_string(280, 122, "Network & Remote", COLOR_PURPLE, COLOR_DARKGRAY);
+
+    draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
+    draw_string(10, 246, "Terminal and USB networking grouped here", COLOR_GRAY, COLOR_TOPBAR);
+    fb_flip();
+}
+
+static void show_tools_menu(void) {
+    draw_tools_screen();
+    sleep_ms(300);
+    reset_touch_state();
+
+    int px, py;
+    int running = 1;
+    while (running) {
+        int ret = poll_touch_click(&px, &py);
+        if (ret == 2) {
+            show_power_menu();
+            draw_tools_screen();
+            reset_touch_state();
+            continue;
+        }
+        if (ret == 1) {
+            if (px >= 405 && py <= 28) {
+                running = 0;
+                break;
+            }
+            if (px >= 16 && px <= 232 && py >= 48 && py <= 198) {
+                show_terminal();
+                draw_tools_screen();
+                reset_touch_state();
+                continue;
+            }
+            if (px >= 248 && px <= 464 && py >= 48 && py <= 198) {
+                show_usb_menu();
+                draw_tools_screen();
+                reset_touch_state();
+                continue;
+            }
+        }
+        sleep_ms(20);
+    }
+    reset_touch_state();
 }
 
 static void draw_bluetooth_screen(const char *action_status) {
@@ -1278,7 +1463,7 @@ static void draw_bluetooth_screen(const char *action_status) {
     /* Control Buttons: y = 32, h = 32 */
     /* Button 1: START / INIT */
     draw_rect(10, 32, 145, 32, COLOR_BLUE);
-    draw_string(30, 40, "START / INIT", COLOR_WHITE, COLOR_BLUE);
+    draw_string(34, 40, "START AUDIO", COLOR_WHITE, COLOR_BLUE);
 
     /* Button 2: SCAN PHONES */
     draw_rect(165, 32, 145, 32, COLOR_ORANGE);
@@ -1286,7 +1471,7 @@ static void draw_bluetooth_screen(const char *action_status) {
 
     /* Button 3: SPEAKER MODE */
     draw_rect(320, 32, 150, 32, COLOR_GREEN);
-    draw_string(335, 40, "SPEAKER MODE", COLOR_BLACK, COLOR_GREEN);
+    draw_string(355, 40, "STOP AUDIO", COLOR_BLACK, COLOR_GREEN);
 
     /* Central Display Box */
     draw_rect(10, 70, 460, 162, COLOR_BLACK);
@@ -1347,33 +1532,19 @@ static void draw_bluetooth_screen(const char *action_status) {
         draw_string(20, 114, "Audio Codec: Wolfson WM8711 DAC (I2S Stereo)", COLOR_CYAN, COLOR_BLACK);
         draw_string(20, 132, "Device Name: 'TomTom ONE XL' | PIN: 0000", COLOR_GREEN, COLOR_BLACK);
         draw_string(20, 150, "----------------------------------------------------", COLOR_GRAY, COLOR_BLACK);
-        draw_string(20, 168, "1. Tap [START / INIT] to enable Bluetooth adapter", COLOR_WHITE, COLOR_BLACK);
+        draw_string(20, 168, "1. Tap [START AUDIO] to enable A2DP sink", COLOR_WHITE, COLOR_BLACK);
         draw_string(20, 186, "2. Tap [SCAN PHONES] to discover nearby phones", COLOR_WHITE, COLOR_BLACK);
-        draw_string(20, 204, "3. Connect phone to 'TomTom ONE XL' to stream audio", COLOR_YELLOW, COLOR_BLACK);
+        draw_string(20, 204, "3. Connect phone to 'TomTom ONE XL' and play", COLOR_YELLOW, COLOR_BLACK);
     }
 
-    /* Bottom Status Bar + real codec volume controls */
+    /* Bottom status: volume follows the connected phone via BlueALSA software volume. */
     draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
-    draw_string(10, 246, "A2DP", COLOR_GRAY, COLOR_TOPBAR);
-
-    draw_rect(220, 240, 70, 28, COLOR_BLUE);
-    draw_string(235, 246, "VOL-", COLOR_WHITE, COLOR_BLUE);
-
-    draw_rect(300, 240, 90, 28, COLOR_DARKGRAY);
-    draw_string(310, 246, "VOL", COLOR_WHITE, COLOR_DARKGRAY);
-    draw_num(350, 246, bt_volume, COLOR_YELLOW, COLOR_DARKGRAY);
-
-    draw_rect(400, 240, 70, 28, COLOR_GREEN);
-    draw_string(415, 246, "VOL+", COLOR_BLACK, COLOR_GREEN);
+    draw_string(10, 246, "A2DP | VOLUME CONTROL: PHONE", COLOR_GRAY, COLOR_TOPBAR);
 
     fb_flip();
 }
 
 static void show_bluetooth_menu(void) {
-    if (!bt_volume_initialized) {
-        bt_exec_cmd("/usr/bin/ttvolume set 110 > /tmp/vol_out.txt 2>&1");
-        bt_volume_initialized = 1;
-    }
     draw_bluetooth_screen("Ready. Select an action above.");
     sleep_ms(300);
     reset_touch_state();
@@ -1390,44 +1561,20 @@ static void show_bluetooth_menu(void) {
             continue;
         }
         if (ret == 1) {
-            /* Bottom volume controls */
-            if (py >= 238) {
-                if (px >= 220 && px <= 290) {
-                    if (bt_volume > 0) {
-                        bt_exec_cmd("/usr/bin/ttvolume down > /tmp/vol_out.txt 2>&1");
-                        bt_volume -= 5;
-                        if (bt_volume < 0) bt_volume = 0;
-                    }
-                    draw_bluetooth_screen("Volume decreased.");
-                    reset_touch_state();
-                    continue;
-                }
-                if (px >= 400 && px <= 470) {
-                    if (bt_volume < 121) {
-                        bt_exec_cmd("/usr/bin/ttvolume up > /tmp/vol_out.txt 2>&1");
-                        bt_volume += 5;
-                        if (bt_volume > 121) bt_volume = 121;
-                    }
-                    draw_bluetooth_screen("Volume increased.");
-                    reset_touch_state();
-                    continue;
-                }
-            }
-
             /* Back button (x: 405..480, y: 0..28) */
             if (px >= 405 && py <= 28) {
                 running = 0;
                 break;
             }
 
-            /* Button 1: START / INIT (x: 10..155, y: 30..66) */
+            /* Button 1: START AUDIO (x: 10..155, y: 30..66) */
             if (px >= 10 && px <= 155 && py >= 30 && py <= 66) {
                 draw_rect(10, 32, 145, 32, COLOR_YELLOW);
                 draw_string(30, 40, "INITIALIZING...", COLOR_BLACK, COLOR_YELLOW);
                 fb_flip();
 
-                bt_exec_cmd("/usr/bin/bt_tool.sh init > /tmp/bt_out.txt 2>&1");
-                draw_bluetooth_screen("CSR Bluetooth initialized.");
+                bt_exec_cmd("/usr/bin/bt_tool.sh start > /tmp/bt_out.txt 2>&1");
+                draw_bluetooth_screen("Bluetooth A2DP sink started.");
                 sleep_ms(200);
                 reset_touch_state();
                 continue;
@@ -1446,14 +1593,14 @@ static void show_bluetooth_menu(void) {
                 continue;
             }
 
-            /* Button 3: SPEAKER MODE (x: 320..470, y: 30..66) */
+            /* Button 3: STOP AUDIO (x: 320..470, y: 30..66) */
             if (px >= 320 && px <= 470 && py >= 30 && py <= 66) {
                 draw_rect(320, 32, 150, 32, COLOR_YELLOW);
-                draw_string(335, 40, "SPEAKER ON...", COLOR_BLACK, COLOR_YELLOW);
+                draw_string(350, 40, "STOPPING...", COLOR_BLACK, COLOR_YELLOW);
                 fb_flip();
 
-                bt_exec_cmd("/usr/bin/bt_tool.sh speaker > /tmp/bt_out.txt 2>&1");
-                draw_bluetooth_screen("Speaker mode active.");
+                bt_exec_cmd("/usr/bin/bt_tool.sh stop > /tmp/bt_out.txt 2>&1");
+                draw_bluetooth_screen("Bluetooth audio stopped.");
                 sleep_ms(200);
                 reset_touch_state();
                 continue;
@@ -1551,8 +1698,8 @@ void _start(void) {
                 case 0: /* CALIBRATE */
                     run_calibration();
                     break;
-                case 1: /* TERMINAL */
-                    show_terminal();
+                case 1: /* TOOLS */
+                    show_tools_menu();
                     break;
                 case 2: /* EXPLORER */
                     show_file_explorer();
