@@ -1,6 +1,6 @@
 # Public V3 release
 
-The public release is derived from the hardware-accepted Linux 6.1.182 #176 + V3 shell state.
+The public release is derived from the hardware-accepted Linux 6.1.182 #176 + V3 shell state. The kernel/audio/UI base is hardware-proven; the public-safe SSH-provisioning variant is build/TTBL-validated but has not yet been separately reboot-tested on hardware.
 
 ## Security difference from the private preservation image
 

@@ -4,7 +4,7 @@ A working Linux 6.1.182 port for the **TomTom ONE XL**, with a native 480×272 t
 
 ![TomTom ONE XL V3 shell](docs/images/home-shell.png)
 
-> **Status:** hardware-tested on a real TomTom ONE XL (Samsung S3C2412 / ARM9). The ready-to-copy `ttsystem` image is published under **Releases**.
+> **Status:** the Linux 6.1.182 #176 kernel, audio/Bluetooth stack and V3 shell are hardware-tested on a real TomTom ONE XL (Samsung S3C2412 / ARM9). The public `ttsystem` release uses that accepted base with sanitized SSH-key provisioning; it is build/TTBL-validated but has not yet been separately reboot-tested on hardware.
 
 ## What works
 
