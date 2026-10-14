@@ -1,85 +1,141 @@
-# TomTom ONE XL — Linux 6.1 Port
+# Linux 6.1 on the TomTom ONE XL
 
-Clean consolidation tree for the TomTom ONE XL (Limerick / Samsung S3C2412).
+A working Linux 6.1.182 port for the **TomTom ONE XL**, with a native 480×272 touchscreen shell, audio, Bluetooth A2DP sink support, USB networking/SSH, terminal, file explorer and touch calibration.
 
-This directory is the new canonical source/build layer. The older
-`/home/macbuntu/Documents/ttwork` workbench remains intact as historical evidence
-until the clean build is fully validated on hardware.
+![TomTom ONE XL V3 shell](docs/images/home-shell.png)
 
-## Current proven hardware state
+> **Status:** hardware-tested on a real TomTom ONE XL (Samsung S3C2412 / ARM9). The ready-to-copy `ttsystem` image is published under **Releases**.
 
-- Linux 6.1.182 boots.
-- framebuffer, touch, storage and UI work.
-- TomTom SFTRST reboot using INFORM0=0x9 is hardware-proven.
-- ALSA / S3C2412 I2S / WM8711 local playback is audible.
-- CSR BlueCore BCSP at 460800 baud works.
-- BlueZ 5.86 + BlueALSA 4.3.1 A2DP sink works.
-- iPhone transport cadence is nearly fixed by capping SBC sink max bitpool to 35.
+## What works
 
-See `docs/PROJECT-AUDIT-20260916.md` and `reference/PROVENANCE.md`.
+- Linux **6.1.182** on Samsung S3C2412 / ARM9
+- 480×272 RGB565 framebuffer
+- resistive touchscreen + persistent calibration
+- SD/FAT storage
+- native V3 launcher/shell
+- ALSA audio through S3C2412 I2S + WM8711
+- CSR BlueCore Bluetooth over BCSP UART at 460800 baud
+- BlueZ 5.86 + BlueALSA 4.3.1 A2DP sink
+- phone-controlled Bluetooth volume
+- USB networking at `192.168.7.2`
+- Dropbear SSH
+- built-in terminal
+- file explorer + text viewer
+- hardware-safe reboot / power-off paths
 
-## Important preservation rule
+The current shell keeps a simple four-tile layout inspired by the clarity of the original TomTom UI without trying to clone it:
 
-Do not remove the legacy Buildroot output or old workbench yet.
+- **CALIBRATE** — touchscreen setup
+- **TOOLS** — terminal and USB/SSH
+- **EXPLORER** — device and SD-card files
+- **BLUETOOTH** — wireless audio pairing/status
 
-The exact live runtime and image state were captured at:
+## Quick install
 
-    ../checkpoints/20260916-consolidation-p0-live-authority
+1. Open the latest GitHub **Release**.
+2. Download the asset named **`ttsystem`**.
+3. Connect the TomTom in mass-storage mode.
+4. Back up the existing `ttsystem` from the device root.
+5. Copy the downloaded file to the device root as:
 
-## Layout
+   ```text
+   /ttsystem
+   ```
 
-- `kernel/patches/` — kernel source preservation/cleanup patches.
-- `userspace/pid1/` — tiny custom PID1.
-- `userspace/launcher/` — framebuffer launcher/UI.
-- `userspace/diagnostics/` — no-libc tone, volume and HCI tools.
-- `userspace/bluetooth/` — pairing agent, startup, quiesce and configs.
-- `third_party/patches/bluez-alsa/` — TomTom platform patches.
-- `configs/` — current reference configs; clean dev/prod defconfigs follow.
-- `tools/` — reproducible build/materialization helpers.
-- `out/` — generated output only; safe-to-delete goal.
-- `reference/` — manifests and provenance, not generated binaries.
+6. Safely eject the TomTom and boot it.
 
-## Reproduce the retry-hardened pairing agent
+No installer or flashing utility is required.
 
-    ./tools/build-agent.sh
+## Public-release SSH setup
 
-Expected SHA256:
+The public image intentionally ships with **no shared SSH host private keys and no personal login key**.
 
-    57d8fc79e301fc8ebc1df0ff5e1efa040907c2cc12eebd58fc2b9c5e33155ebf
+For USB SSH:
 
-## Rebuild patched BlueALSA 4.3.1
+1. Put your SSH public key on the TomTom SD/FAT volume as:
 
-    ./tools/rebuild-bluealsa.sh
+   ```text
+   /authorized_keys
+   ```
 
-Expected stripped BlueALSA SHA256:
+2. Open **TOOLS → USB + SSH**.
+3. Start SSH.
+4. Connect from the host computer:
 
-    417b1cea148c2cf703c6e195c10e5635938bd33a4509d98431cda0514c3d1c9c
+   ```sh
+   ssh root@192.168.7.2
+   ```
 
-## Generate the FAT runtime
+On first use the TomTom generates its own Dropbear host key and stores it under `/sdcard/.dropbear/`, so its SSH fingerprint remains stable across reboots. Password authentication is disabled.
 
-After BlueALSA has been rebuilt:
+## Repository layout
 
-    ./tools/build-runtime.sh
+```text
+configs/                     Reference and production kernel/Buildroot configs
+docs/                        Hardware notes, audits, packaging and UI documentation
+kernel/patches/               Linux 6.1.182 TomTom preservation/port patch
+reference/                    Provenance, image identity and source manifests
+third_party/patches/          BlueZ/BlueALSA platform patches
+userspace/bluetooth/          Bluetooth startup, pairing and audio configuration
+userspace/diagnostics/        Hardware/audio diagnostic utilities
+userspace/launcher/           Native 480×272 framebuffer shell
+userspace/pid1/               Tiny custom PID1/supervisor
+tools/                        Rebuild/materialization helpers
+```
 
-This copies the exact Buildroot target binaries/libraries, strips them, and
-materializes SONAME aliases as real files because VFAT cannot preserve Unix
-symlinks.
+Generated binaries are deliberately kept out of Git. The installable `ttsystem` lives under **Releases**.
 
-## Production vs debug Bluetooth startup
+## Kernel / image identity
 
-- `userspace/bluetooth/ttbt_modern_init.sh`: prepared quiet production startup.
-  It waits explicitly for /sdcard, avoids normal verbose BlueZ/HCI logging and is
-  **not deployed yet**.
-- `userspace/bluetooth/ttbt_modern_init-debug-current.sh`: current verbose
-  hardware-debug startup preserved from modern8.
+The public V3 release is based on:
 
-The debug path stays authoritative until reboot/overrun validation is complete.
+```text
+Linux:        6.1.182
+Build:        #176 Wed Oct 14 12:14:40 BST 2026
+Architecture: ARM / Samsung S3C2412
+Display:      480×272
+```
 
-## Kernel source preservation
+The public-safe release differs from the private hardware-preservation image only in SSH identity provisioning: it removes embedded host/login keys and generates a per-device host identity on first use. Kernel platform code, audio path and V3 launcher are unchanged.
 
-`kernel/patches/0000-current-k6-preservation.patch` is intentionally unsplit and
-not upstream-ready. It exists so pristine Linux 6.1.182 can reproduce the exact
-current k6 source state before cleanup begins.
+Current public-release SHA-256 values:
 
-Next work is to split and simplify that patch while continuously checking against
-the preservation patch and hardware.
+```text
+zImage   2061081239680f17eb476cf8e299e5e5bbe5806e9c5ea55cdab7998f41ada4db
+ttsystem 0033810e10b5a79955b6398c60028413706ed0068893a9b2cfcbc2430ce1cb21
+launcher 50ceebbf92dfd8c9444a8f0aae6dce39ea2ead543c451ae5ade75af2b59f7cac
+```
+
+Release assets also include a checksum file.
+
+## Building
+
+This repository is the compact development/consolidation tree rather than a vendored 1.7 GB Linux source dump.
+
+Start from pristine **Linux 6.1.182**, apply:
+
+```text
+kernel/patches/0000-current-k6-preservation.patch
+```
+
+and use the reference config under `configs/`. The custom PID1, launcher and platform userspace sources are in `userspace/`.
+
+The exact build identity used for the accepted image is documented in `docs/UI-V3-FINAL-20261014.md` and `docs/BT-SHELL-PACKAGING-20261014.md`.
+
+## Bluetooth notes
+
+The final hardware configuration uses CSR BlueCore over BCSP and an A2DP sink built around BlueZ/BlueALSA. The project history includes the pacing/queue diagnostics that were used to eliminate the earlier multi-second latency/cadence problem.
+
+See:
+
+- `docs/BT-A2DP-PACING-DIAGNOSTIC-20260916.md`
+- `docs/PROJECT-AUDIT-20260916.md`
+- `docs/UI-V3-FINAL-20261014.md`
+
+## Hardware target
+
+This work targets the **TomTom ONE XL** platform used in this project. Other TomTom models may differ in SoC, display, audio codec, boot image format or GPIO wiring; do not assume drop-in compatibility.
+
+## Project scope
+
+This is an independent Linux port / hardware-research project. It is not an official TomTom product or firmware release. TomTom trademarks belong to their respective owner.
