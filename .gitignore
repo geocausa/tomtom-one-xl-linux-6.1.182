@@ -1,4 +1,5 @@
 /out/
+/out-ui-v*/
 *.o
 *.a
 *.so

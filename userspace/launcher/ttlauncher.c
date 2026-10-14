@@ -196,6 +196,11 @@ static const unsigned short ICON_USB[16] = { 0x0180, 0x0180, 0x03c0, 0x0180, 0x0
 static const unsigned short ICON_BACK[16] = { 0x0000, 0x0000, 0x0600, 0x0c00, 0x1800, 0x3ffc, 0x7ff8, 0x3ffc, 0x1800, 0x0c00, 0x0600, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000 };
 static const unsigned short ICON_POWER[16] = { 0x0180, 0x0180, 0x0180, 0x0180, 0x1998, 0x318c, 0x6186, 0x6006, 0x6006, 0x6006, 0x300c, 0x1818, 0x0ff0, 0x07e0, 0x0000, 0x0000 };
 static const unsigned short ICON_FILE[16] = { 0x0ff0, 0x0c38, 0x0c78, 0x0cd8, 0x0c18, 0x0c18, 0x0c18, 0x0c18, 0x0c18, 0x0c18, 0x0c18, 0x0c18, 0x0ff8, 0x0000, 0x0000, 0x0000 };
+static const unsigned short ICON_PLAY[16] = { 0x0000, 0x1000, 0x1800, 0x1c00, 0x1e00, 0x1f00, 0x1f80, 0x1fc0, 0x1fc0, 0x1f80, 0x1f00, 0x1e00, 0x1c00, 0x1800, 0x1000, 0x0000 };
+static const unsigned short ICON_STOP[16] = { 0x0000, 0x0000, 0x3ffc, 0x3ffc, 0x3ffc, 0x3ffc, 0x3ffc, 0x3ffc, 0x3ffc, 0x3ffc, 0x3ffc, 0x3ffc, 0x3ffc, 0x3ffc, 0x0000, 0x0000 };
+static const unsigned short ICON_SCAN[16] = { 0x0000, 0x0000, 0x0ff0, 0x1818, 0x2004, 0x43c2, 0x4422, 0x4812, 0x4812, 0x4422, 0x43c2, 0x2004, 0x1818, 0x0ff0, 0x0000, 0x0000 };
+static const unsigned short ICON_HOME[16] = { 0x0180, 0x03c0, 0x07e0, 0x0ff0, 0x1ff8, 0x3ffc, 0x7ffe, 0x6006, 0x6606, 0x6606, 0x6606, 0x67e6, 0x6006, 0x7ffe, 0x0000, 0x0000 };
+static const unsigned short ICON_UP[16] = { 0x0180, 0x03c0, 0x07e0, 0x0db0, 0x1998, 0x318c, 0x6186, 0x0180, 0x0180, 0x0180, 0x0180, 0x0180, 0x0180, 0x0000, 0x0000, 0x0000 };
 
 
 /* V2 lightweight UI primitives. All drawing stays integer-only/static. */
@@ -244,6 +249,49 @@ static void draw_icon32(int x, int y, const unsigned short *rows,
         }
     }
 }
+
+static void draw_icon48(int x, int y, const unsigned short *rows,
+                        unsigned short fg) {
+    for (int r = 0; r < 16; r++) {
+        unsigned short bits = rows[r];
+        for (int c = 0; c < 16; c++) {
+            if (bits & (0x8000 >> c)) {
+                int px = x + c * 3;
+                int py = y + r * 3;
+                for (int yy = 0; yy < 3; yy++)
+                    for (int xx = 0; xx < 3; xx++)
+                        draw_pixel(px + xx, py + yy, fg);
+            }
+        }
+    }
+}
+
+static void draw_string_n(int x, int y, const char *str, int max_chars,
+                          unsigned short fg, unsigned short bg) {
+    int n = 0;
+    while (*str && n < max_chars) {
+        draw_char(x, y, *str, fg, bg);
+        x += 8;
+        str++;
+        n++;
+    }
+}
+
+static void ui_icon_action_button(int x, int y, int w, int h,
+                                  const unsigned short *icon,
+                                  const char *label, unsigned short accent) {
+    draw_rect(x, y, w, h, COLOR_DARKGRAY);
+    draw_outline(x, y, w, h, COLOR_HAIRLINE);
+    draw_rect(x + 1, y + 1, 4, h - 2, accent);
+    draw_rect(x + 5, y + 1, w - 7, 1, COLOR_HIGHLIGHT);
+    draw_icon16(x + 12, y + (h - 16) / 2, icon, accent);
+    int lx = x + 36;
+    int maxx = x + w - 8;
+    int need = tiny_strlen(label) * 8;
+    if (lx + need > maxx) lx = x + (w - need) / 2;
+    draw_string(lx, y + (h - 16) / 2, label, COLOR_WHITE, COLOR_DARKGRAY);
+}
+
 
 static void ui_card_shell(int x, int y, int w, int h,
                           unsigned short accent, int pressed) {
@@ -453,7 +501,7 @@ static void draw_top_bar(void) {
     draw_rect(0, 0, FB_WIDTH, 30, COLOR_TOPBAR);
     draw_rect(0, 28, FB_WIDTH, 2, COLOR_AMBER);
     draw_string_tracked(12, 6, "ONE XL", COLOR_WHITE, COLOR_TOPBAR);
-    draw_string(212, 6, "HOME", COLOR_GRAY, COLOR_TOPBAR);
+    draw_string(196, 6, "MAIN MENU", COLOR_GRAY, COLOR_TOPBAR);
     draw_icon16(394, 6, ICON_POWER, COLOR_AMBER);
     draw_string(416, 6, "POWER", COLOR_GRAY, COLOR_TOPBAR);
 }
@@ -463,17 +511,14 @@ static void draw_tile(Tile *t) {
     static const unsigned short *home_icons[4] = {
         ICON_CALIBRATE, ICON_TOOLS, ICON_FOLDER, ICON_BLUETOOTH
     };
-    static const char *micro[4] = { "INPUT", "SYSTEM", "STORAGE", "A2DP" };
     unsigned short accent = (idx == 3) ? COLOR_BLUE : t->color;
     ui_card_shell(t->x, t->y, t->w, t->h, accent, t->is_pressed);
     unsigned short fill = t->is_pressed ? COLOR_SURFACE_HI : COLOR_DARKGRAY;
 
-    draw_icon32(t->x + 18, t->y + 20, home_icons[idx], accent);
-    draw_string_tracked(t->x + 64, t->y + 18, t->title, COLOR_WHITE, fill);
-    draw_string(t->x + 64, t->y + 43, t->subtitle, COLOR_GRAY, fill);
-
-    draw_rect(t->x + 64, t->y + 72, 5, 5, accent);
-    draw_string(t->x + 76, t->y + 66, micro[idx], accent, fill);
+    /* Original TomTom menus were icon-first and deliberately sparse. */
+    draw_icon48(t->x + 18, t->y + 27, home_icons[idx], accent);
+    draw_string_tracked(t->x + 82, t->y + 27, t->title, COLOR_WHITE, fill);
+    draw_string(t->x + 82, t->y + 57, t->subtitle, COLOR_GRAY, fill);
 }
 
 static void draw_launcher(void) {
@@ -509,13 +554,14 @@ static void run_calibration(void) {
 
     for (int step = 0; step < 4; step++) {
         draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
-        draw_rect(0, 0, FB_WIDTH, 26, COLOR_CYAN);
-        draw_string(140, 5, "TOUCHSCREEN CALIBRATION", COLOR_BLACK, COLOR_CYAN);
+        ui_header("CALIBRATE", COLOR_CYAN, 0);
+        draw_icon32(216, 48, ICON_CALIBRATE, COLOR_CYAN);
+        draw_string(156, 86, "TOUCH THE TARGET", COLOR_WHITE, COLOR_BG);
 
-        char msg[] = "Press Target 1 of 4 accurately with stylus";
-        msg[13] = '1' + step;
+        char msg[] = "Point 1 of 4";
+        msg[6] = '1' + step;
         int mx = (FB_WIDTH - tiny_strlen(msg) * 8) / 2;
-        draw_string(mx, 120, msg, COLOR_WHITE, COLOR_BG);
+        draw_string(mx, 112, msg, COLOR_GRAY, COLOR_BG);
 
         draw_crosshair(targets_x[step], targets_y[step], COLOR_YELLOW);
         fb_flip();
@@ -569,13 +615,14 @@ static void run_calibration(void) {
     save_calibration();
 
     draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
-    draw_rect(0, 0, FB_WIDTH, 26, COLOR_GREEN);
-    draw_string(150, 5, "CALIBRATION SAVED!", COLOR_BLACK, COLOR_GREEN);
-    draw_string(80, 80, "Calibration written to /etc/pointercal", COLOR_WHITE, COLOR_BG);
-    draw_string(80, 110, "Parameters successfully applied.", COLOR_GREEN, COLOR_BG);
+    ui_header("CALIBRATE", COLOR_CYAN, 0);
+    ui_card_shell(40, 52, 400, 106, COLOR_GREEN, 0);
+    draw_icon48(60, 78, ICON_CALIBRATE, COLOR_GREEN);
+    draw_string_tracked(128, 70, "CALIBRATION SAVED", COLOR_WHITE, COLOR_DARKGRAY);
+    draw_string(128, 98, "Touch mapping updated", COLOR_GRAY, COLOR_DARKGRAY);
+    draw_string(128, 126, "Ready to use", COLOR_GREEN, COLOR_DARKGRAY);
 
-    draw_rect(170, 190, 140, 42, COLOR_CYAN);
-    draw_string(220, 204, "FINISH", COLOR_BLACK, COLOR_CYAN);
+    ui_action_button(150, 190, 180, 42, "DONE", COLOR_CYAN);
     fb_flip();
 
     sleep_ms(400);
@@ -701,21 +748,15 @@ static void draw_keyboard(void) {
         const KeyDef *k = &keys[i];
         unsigned short bg = COLOR_DARKGRAY;
         unsigned short fg = COLOR_WHITE;
-        if (k->key_char == '\n') { bg = COLOR_GREEN; fg = COLOR_BLACK; }
-        else if (k->key_char == '\b') { bg = COLOR_BLUE; }
-        else if (tiny_strcmp(k->label, "EXIT") == 0) { bg = COLOR_RED; }
-        else if (k->action != 0) { bg = COLOR_PURPLE; }
+        unsigned short edge = COLOR_HAIRLINE;
+        if (k->key_char == '\n') { bg = COLOR_GREEN; fg = COLOR_BLACK; edge = COLOR_GREEN; }
+        else if (k->key_char == '\b') { edge = COLOR_BLUE; }
+        else if (tiny_strcmp(k->label, "EXIT") == 0) { edge = COLOR_RED; }
+        else if (k->action != 0) { edge = COLOR_ORANGE; fg = COLOR_ORANGE; }
 
         draw_rect(k->x, k->y, k->w, k->h, bg);
-        for (int b = 0; b < k->w; b++) {
-            draw_pixel(k->x + b, k->y, COLOR_GRAY);
-            draw_pixel(k->x + b, k->y + k->h - 1, COLOR_BLACK);
-        }
-        for (int b = 0; b < k->h; b++) {
-            draw_pixel(k->x, k->y + b, COLOR_GRAY);
-            draw_pixel(k->x + k->w - 1, k->y + b, COLOR_BLACK);
-        }
-
+        draw_outline(k->x, k->y, k->w, k->h, edge);
+        if (k->w > 4) draw_rect(k->x + 2, k->y + 1, k->w - 4, 1, COLOR_HIGHLIGHT);
         int lx = k->x + (k->w - tiny_strlen(k->label) * 8) / 2;
         int ly = k->y + (k->h - 16) / 2;
         draw_string(lx, ly, k->label, fg, bg);
@@ -751,28 +792,29 @@ static void flash_key(const KeyDef *k) {
 }
 
 static void draw_terminal_screen(const char *input_buf) {
-    draw_rect(0, 0, FB_WIDTH, 146, COLOR_SURFACE_LO);
+    draw_rect(0, 0, FB_WIDTH, 146, COLOR_BG);
     ui_header("TERMINAL", COLOR_ORANGE, 0);
-
     ui_action_button(336, 2, 64, 24, "CLEAR", COLOR_ORANGE);
     ui_action_button(405, 2, 70, 24, "EXIT", COLOR_RED);
 
+    ui_inset(6, 34, 468, 106);
     int start_idx = 0;
-    if (term_num_lines > 6) start_idx = term_num_lines - 6;
-    int y = 25;
+    if (term_num_lines > 5) start_idx = term_num_lines - 5;
+    int y = 38;
     for (int i = start_idx; i < term_num_lines; i++) {
-        draw_string(8, y, term_lines[i], COLOR_WHITE, COLOR_BLACK);
+        draw_string_n(12, y, term_lines[i], 56, COLOR_WHITE, COLOR_SURFACE_LO);
         y += 16;
     }
 
-    draw_string(8, 124, "sh# ", COLOR_GREEN, COLOR_BLACK);
+    draw_rect(10, 118, 456, 18, COLOR_BLACK);
+    draw_string(14, 119, "sh#", COLOR_GREEN, COLOR_BLACK);
     int in_len = tiny_strlen(input_buf);
     int disp_start = 0;
-    if (in_len > 50) disp_start = in_len - 50;
-    draw_string(40, 124, input_buf + disp_start, COLOR_YELLOW, COLOR_BLACK);
-    draw_string(40 + (in_len - disp_start) * 8, 124, "_", COLOR_WHITE, COLOR_BLACK);
+    if (in_len > 51) disp_start = in_len - 51;
+    draw_string(46, 119, input_buf + disp_start, COLOR_YELLOW, COLOR_BLACK);
+    draw_string(46 + (in_len - disp_start) * 8, 119, "_", COLOR_WHITE, COLOR_BLACK);
 
-    draw_rect(0, 144, FB_WIDTH, 2, COLOR_CYAN);
+    draw_rect(0, 144, FB_WIDTH, 2, COLOR_ORANGE);
 }
 
 static void term_run_command(const char *cmd) {
@@ -975,9 +1017,12 @@ static int is_entry_dir(const char *parent, const char *name, unsigned char dtyp
 }
 
 static void show_file_viewer(const char *filepath) {
-    draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_SURFACE_LO);
-    ui_header("FILE VIEWER", COLOR_GREEN, 0);
-    draw_string(12, 34, filepath, COLOR_GRAY, COLOR_SURFACE_LO);
+    draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
+    ui_header("VIEW FILE", COLOR_GREEN, 1);
+    ui_inset(10, 36, 460, 26);
+    draw_icon16(16, 41, ICON_FILE, COLOR_GREEN);
+    draw_string_n(40, 41, filepath, 52, COLOR_GRAY, COLOR_SURFACE_LO);
+    ui_inset(10, 68, 460, 164);
 
     int fd = sys_open(filepath, O_RDONLY, 0);
     if (fd >= 0) {
@@ -985,41 +1030,35 @@ static void show_file_viewer(const char *filepath) {
         sys_close(fd);
         if (n > 0) {
             viewer_buf[n] = '\0';
-            int ly = 54;
+            int ly = 74;
             char *p = viewer_buf;
-            for (int i = 0; i < 11 && *p; i++) {
+            for (int i = 0; i < 9 && *p; i++) {
                 char line[60];
                 int lp = 0;
-                while (*p && *p != '\n' && lp < 58) line[lp++] = *p++;
+                while (*p && *p != '\n' && lp < 54) line[lp++] = *p++;
                 if (*p == '\n') p++;
                 line[lp] = '\0';
-                draw_string(10, ly, line, COLOR_WHITE, COLOR_BLACK);
-                ly += 16;
+                draw_string(18, ly, line, COLOR_WHITE, COLOR_SURFACE_LO);
+                ly += 17;
             }
         } else {
-            draw_string(20, 60, "(Empty file)", COLOR_GRAY, COLOR_BLACK);
+            draw_string(20, 84, "Empty file", COLOR_GRAY, COLOR_SURFACE_LO);
         }
     } else {
-        draw_string(20, 60, "Unable to read file.", COLOR_RED, COLOR_BLACK);
+        draw_string(20, 84, "Unable to read file", COLOR_RED, COLOR_SURFACE_LO);
     }
 
-    draw_rect(170, 235, 140, 32, COLOR_RED);
-    draw_string(220, 243, "BACK", COLOR_WHITE, COLOR_RED);
+    draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
+    draw_string(144, 246, "TEXT PREVIEW - READ ONLY", COLOR_FAINT, COLOR_TOPBAR);
     fb_flip();
 
     sleep_ms(300);
     reset_touch_state();
-
     int px, py;
     while (1) {
         int ret = poll_touch_click(&px, &py);
-        if (ret == 2) {
-            show_power_menu();
-            break;
-        }
-        if (ret == 1) {
-            if (px >= 140 && px <= 340 && py >= 220) break;
-        }
+        if (ret == 2) { show_power_menu(); break; }
+        if (ret == 1 && px >= 405 && py <= 28) break;
         sleep_ms(20);
     }
     reset_touch_state();
@@ -1036,8 +1075,6 @@ static void show_file_explorer(void) {
     int running = 1;
     while (running) {
         num_entries = 0;
-
-        /* If not root, add [..] parent link */
         if (explorer_current_dir[1] != '\0') {
             tiny_memcpy(explorer_entries[num_entries], "..", 3);
             explorer_is_dir[num_entries] = 1;
@@ -1064,189 +1101,115 @@ static void show_file_explorer(void) {
             }
         }
 
-        int max_page = (num_entries > 0) ? int_div(num_entries - 1, 8) : 0;
+        int max_page = (num_entries > 0) ? int_div(num_entries - 1, 5) : 0;
         if (page > max_page) page = max_page;
         if (page < 0) page = 0;
 
-        /* Render File List Screen */
         draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
+        ui_header("EXPLORER", COLOR_GREEN, 1);
 
-        /* Top Header */
-        draw_rect(0, 0, FB_WIDTH, 26, COLOR_GREEN);
-        draw_string(8, 5, "EXPLORER:", COLOR_BLACK, COLOR_GREEN);
-        draw_string(85, 5, explorer_current_dir, COLOR_BLACK, COLOR_GREEN);
-        draw_rect(410, 2, 65, 22, COLOR_RED);
-        draw_string(425, 5, "CLOSE", COLOR_WHITE, COLOR_RED);
+        ui_inset(10, 34, 460, 26);
+        draw_icon16(16, 39, ICON_FOLDER, COLOR_GREEN);
+        draw_string_n(40, 39, explorer_current_dir, 52, COLOR_WHITE, COLOR_SURFACE_LO);
 
-        /* Quick Navigation Bar */
-        draw_rect(0, 27, FB_WIDTH, 25, COLOR_TOPBAR);
-        draw_rect(4, 29, 44, 21, COLOR_DARKGRAY);
-        draw_string(18, 32, "/", COLOR_WHITE, COLOR_DARKGRAY);
+        /* Three appliance-style navigation choices; /etc and /bin remain
+         * available naturally through DEVICE without crowding the toolbar. */
+        ui_action_button(10, 66, 140, 28, "DEVICE", COLOR_GREEN);
+        ui_action_button(160, 66, 150, 28, "SD CARD", COLOR_CYAN);
+        ui_icon_action_button(320, 66, 150, 28, ICON_UP, "UP", COLOR_GRAY);
 
-        draw_rect(52, 29, 84, 21, COLOR_DARKGRAY);
-        draw_string(58, 32, "/sdcard", COLOR_CYAN, COLOR_DARKGRAY);
-
-        draw_rect(140, 29, 58, 21, COLOR_DARKGRAY);
-        draw_string(148, 32, "/etc", COLOR_YELLOW, COLOR_DARKGRAY);
-
-        draw_rect(202, 29, 58, 21, COLOR_DARKGRAY);
-        draw_string(210, 32, "/bin", COLOR_GREEN, COLOR_DARKGRAY);
-
-        draw_rect(264, 29, 58, 21, COLOR_DARKGRAY);
-        draw_string(274, 32, "UP..", COLOR_WHITE, COLOR_DARKGRAY);
-
-        draw_rect(326, 29, 80, 21, COLOR_PURPLE);
-        draw_string(334, 32, "MNT SD", COLOR_WHITE, COLOR_PURPLE);
-
-        /* File Entries (8 per page) */
-        int start_entry = page * 8;
-        int end_entry = start_entry + 8;
+        int start_entry = page * 5;
+        int end_entry = start_entry + 5;
         if (end_entry > num_entries) end_entry = num_entries;
-
         for (int i = start_entry; i < end_entry; i++) {
             int row_idx = i - start_entry;
-            int y = 54 + row_idx * 23;
-            unsigned short row_bg = (row_idx % 2 == 0) ? COLOR_DARKGRAY : COLOR_BG;
-            draw_rect(6, y, FB_WIDTH - 12, 21, row_bg);
-
-            if (explorer_is_dir[i]) {
-                draw_string(10, y + 3, "[DIR]", COLOR_CYAN, row_bg);
-            } else {
-                draw_string(10, y + 3, "[FILE]", COLOR_WHITE, row_bg);
-            }
-            draw_string(65, y + 3, explorer_entries[i], explorer_is_dir[i] ? COLOR_YELLOW : COLOR_WHITE, row_bg);
+            int y = 100 + row_idx * 27;
+            unsigned short fill = COLOR_DARKGRAY;
+            const unsigned short *ico = explorer_is_dir[i] ? ICON_FOLDER : ICON_FILE;
+            unsigned short accent = explorer_is_dir[i] ? COLOR_CYAN : COLOR_GRAY;
+            draw_rect(10, y, 460, 25, fill);
+            draw_outline(10, y, 460, 25, COLOR_HAIRLINE);
+            draw_rect(10, y, 3, 25, accent);
+            draw_icon16(20, y + 4, ico, accent);
+            draw_string_n(46, y + 4, explorer_entries[i], 44,
+                          explorer_is_dir[i] ? COLOR_WHITE : COLOR_GRAY, fill);
+            if (explorer_is_dir[i])
+                draw_string(444, y + 4, ">", COLOR_CYAN, fill);
         }
+        if (num_entries == 0)
+            draw_string(96, 150, "THIS FOLDER IS EMPTY", COLOR_FAINT, COLOR_BG);
 
-        if (num_entries == 0) {
-            draw_string(20, 80, "Empty directory or storage not mounted.", COLOR_GRAY, COLOR_BG);
-        }
-
-        /* Bottom Pagination Bar */
-        draw_rect(0, 244, FB_WIDTH, 28, COLOR_TOPBAR);
-        if (page > 0) {
-            draw_rect(10, 247, 80, 22, COLOR_BLUE);
-            draw_string(20, 250, "< PREV", COLOR_WHITE, COLOR_BLUE);
-        }
-
-        draw_string(140, 250, "Page ", COLOR_GRAY, COLOR_TOPBAR);
-        draw_num(180, 250, page + 1, COLOR_WHITE, COLOR_TOPBAR);
-        draw_string(195, 250, "/", COLOR_GRAY, COLOR_TOPBAR);
-        draw_num(205, 250, max_page + 1, COLOR_WHITE, COLOR_TOPBAR);
-        draw_string(230, 250, "(", COLOR_GRAY, COLOR_TOPBAR);
-        draw_num(240, 250, num_entries, COLOR_YELLOW, COLOR_TOPBAR);
-        draw_string(265, 250, " items)", COLOR_GRAY, COLOR_TOPBAR);
-
-        if (page < max_page) {
-            draw_rect(390, 247, 80, 22, COLOR_BLUE);
-            draw_string(402, 250, "NEXT >", COLOR_WHITE, COLOR_BLUE);
-        }
-
+        draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
+        if (page > 0) ui_action_button(10, 242, 88, 26, "< PREV", COLOR_BLUE);
+        draw_string(192, 246, "PAGE", COLOR_FAINT, COLOR_TOPBAR);
+        draw_num(232, 246, page + 1, COLOR_WHITE, COLOR_TOPBAR);
+        draw_string(248, 246, "/", COLOR_FAINT, COLOR_TOPBAR);
+        draw_num(264, 246, max_page + 1, COLOR_WHITE, COLOR_TOPBAR);
+        if (page < max_page) ui_action_button(382, 242, 88, 26, "NEXT >", COLOR_BLUE);
         fb_flip();
+
         sleep_ms(300);
         reset_touch_state();
-
         int px, py;
         while (1) {
             int ret = poll_touch_click(&px, &py);
-            if (ret == 2) {
-                show_power_menu();
-                break;
+            if (ret == 2) { show_power_menu(); break; }
+            if (ret != 1) { sleep_ms(20); continue; }
+
+            if (px >= 405 && py <= 28) { running = 0; break; }
+
+            if (py >= 62 && py <= 98) {
+                if (px >= 10 && px <= 150) {
+                    explorer_current_dir[0] = '/'; explorer_current_dir[1] = '\0'; page = 0; break;
+                } else if (px >= 160 && px <= 310) {
+                    ensure_sd_mounted(); tiny_memcpy(explorer_current_dir, "/sdcard", 8); page = 0; break;
+                } else if (px >= 320 && px <= 470) {
+                    int len = tiny_strlen(explorer_current_dir);
+                    while (len > 1 && explorer_current_dir[len - 1] != '/') len--;
+                    if (len > 1) len--;
+                    explorer_current_dir[len] = '\0'; page = 0; break;
+                }
             }
-            if (ret == 1) {
-                /* Top Close Button */
-                if (px >= 405 && py <= 26) {
-                    running = 0;
+
+            if (py >= 238) {
+                if (px <= 108 && page > 0) { page--; break; }
+                if (px >= 372 && page < max_page) { page++; break; }
+            }
+
+            int clicked_row = -1;
+            for (int r = 0; r < 5; r++) {
+                int y = 100 + r * 27;
+                if (py >= y && py < y + 27) {
+                    int item_idx = start_entry + r;
+                    if (item_idx < num_entries) clicked_row = item_idx;
                     break;
                 }
-
-                /* Quick Navigation Bar (y: 27..52) */
-                if (py >= 27 && py <= 52) {
-                    if (px >= 4 && px <= 48) {
-                        explorer_current_dir[0] = '/'; explorer_current_dir[1] = '\0';
-                        page = 0;
-                        break;
-                    } else if (px >= 52 && px <= 136) {
-                        ensure_sd_mounted();
-                        tiny_memcpy(explorer_current_dir, "/sdcard", 8);
-                        page = 0;
-                        break;
-                    } else if (px >= 140 && px <= 198) {
-                        tiny_memcpy(explorer_current_dir, "/etc", 5);
-                        page = 0;
-                        break;
-                    } else if (px >= 202 && px <= 260) {
-                        tiny_memcpy(explorer_current_dir, "/bin", 5);
-                        page = 0;
-                        break;
-                    } else if (px >= 264 && px <= 322) {
-                        int len = tiny_strlen(explorer_current_dir);
-                        while (len > 1 && explorer_current_dir[len - 1] != '/') len--;
-                        if (len > 1) len--;
-                        explorer_current_dir[len] = '\0';
-                        page = 0;
-                        break;
-                    } else if (px >= 326 && px <= 410) {
-                        ensure_sd_mounted();
-                        page = 0;
-                        break;
-                    }
-                }
-
-                /* Bottom Pagination Buttons (y: 244..272) */
-                if (py >= 244) {
-                    if (px >= 10 && px <= 100 && page > 0) {
-                        page--;
-                        break;
-                    } else if (px >= 380 && px <= 475 && page < max_page) {
-                        page++;
-                        break;
-                    }
-                }
-
-                /* Row item clicks (y: 54..240) */
-                int clicked_row = -1;
-                for (int r = 0; r < 8; r++) {
-                    int y = 54 + r * 23;
-                    if (py >= y && py < y + 23) {
-                        int item_idx = start_entry + r;
-                        if (item_idx < num_entries) {
-                            clicked_row = item_idx;
-                        }
-                        break;
-                    }
-                }
-
-                if (clicked_row >= 0) {
-                    if (tiny_strcmp(explorer_entries[clicked_row], "..") == 0) {
-                        int len = tiny_strlen(explorer_current_dir);
-                        while (len > 1 && explorer_current_dir[len - 1] != '/') len--;
-                        if (len > 1) len--;
-                        explorer_current_dir[len] = '\0';
-                        page = 0;
-                        break;
-                    } else if (explorer_is_dir[clicked_row]) {
-                        int len = tiny_strlen(explorer_current_dir);
-                        if (explorer_current_dir[len - 1] != '/') explorer_current_dir[len++] = '/';
-                        const char *s = explorer_entries[clicked_row];
-                        while (*s && len < 120) explorer_current_dir[len++] = *s++;
-                        explorer_current_dir[len] = '\0';
-                        page = 0;
-                        break;
-                    } else {
-                        char filepath[256];
-                        int len = tiny_strlen(explorer_current_dir);
-                        tiny_memcpy(filepath, explorer_current_dir, len);
-                        if (filepath[len - 1] != '/') filepath[len++] = '/';
-                        const char *s = explorer_entries[clicked_row];
-                        while (*s && len < 250) filepath[len++] = *s++;
-                        filepath[len] = '\0';
-
-                        show_file_viewer(filepath);
-                        break;
-                    }
-                }
             }
-            sleep_ms(20);
+            if (clicked_row < 0) continue;
+
+            if (tiny_strcmp(explorer_entries[clicked_row], "..") == 0) {
+                int len = tiny_strlen(explorer_current_dir);
+                while (len > 1 && explorer_current_dir[len - 1] != '/') len--;
+                if (len > 1) len--;
+                explorer_current_dir[len] = '\0'; page = 0; break;
+            }
+            if (explorer_is_dir[clicked_row]) {
+                int len = tiny_strlen(explorer_current_dir);
+                if (explorer_current_dir[len - 1] != '/') explorer_current_dir[len++] = '/';
+                const char *q = explorer_entries[clicked_row];
+                while (*q && len < 120) explorer_current_dir[len++] = *q++;
+                explorer_current_dir[len] = '\0'; page = 0; break;
+            }
+
+            char filepath[256];
+            int len = tiny_strlen(explorer_current_dir);
+            tiny_memcpy(filepath, explorer_current_dir, len);
+            if (filepath[len - 1] != '/') filepath[len++] = '/';
+            const char *q = explorer_entries[clicked_row];
+            while (*q && len < 250) filepath[len++] = *q++;
+            filepath[len] = '\0';
+            show_file_viewer(filepath);
+            break;
         }
     }
     reset_touch_state();
@@ -1355,13 +1318,17 @@ static void draw_usb_screen(const char *action_status) {
     draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
     ui_header("USB + SSH", COLOR_ORANGE, 1);
 
-    ui_action_button(10, 34, 200, 32, "START SSH", COLOR_GREEN);
-    ui_action_button(220, 34, 200, 32, "STOP SSH", COLOR_RED);
-
-    ui_inset(10, 74, 460, 156);
+    ui_card_shell(10, 36, 460, 82, COLOR_ORANGE, 0);
+    draw_icon48(24, 53, ICON_USB, COLOR_ORANGE);
+    draw_string_tracked(88, 48, "REMOTE ACCESS", COLOR_WHITE, COLOR_DARKGRAY);
     if (action_status && action_status[0])
-        draw_string(20, 80, action_status, COLOR_AMBER, COLOR_SURFACE_LO);
+        draw_string_n(88, 74, action_status, 43, COLOR_AMBER, COLOR_DARKGRAY);
+    draw_string(88, 96, "TomTom USB network", COLOR_GRAY, COLOR_DARKGRAY);
 
+    ui_icon_action_button(10, 126, 220, 42, ICON_PLAY, "START SSH", COLOR_GREEN);
+    ui_icon_action_button(240, 126, 230, 42, ICON_STOP, "STOP SSH", COLOR_RED);
+
+    ui_inset(10, 176, 460, 54);
     int fd = sys_open("/tmp/usb_out.txt", O_RDONLY, 0);
     int showed_content = 0;
     if (fd >= 0) {
@@ -1369,31 +1336,31 @@ static void draw_usb_screen(const char *action_status) {
         sys_close(fd);
         if (n > 0) {
             usb_view_buf[n] = '\0';
-            int ly = 102;
             char *p = usb_view_buf;
-            for (int i = 0; i < 7 && *p; i++) {
+            int ly = 183;
+            for (int i = 0; i < 2 && *p; i++) {
                 char line[60]; int lp = 0;
-                while (*p && *p != '\n' && lp < 56) line[lp++] = *p++;
+                while (*p && *p != '\n' && lp < 54) line[lp++] = *p++;
                 if (*p == '\n') p++;
                 line[lp] = '\0';
-                draw_string(20, ly, line, COLOR_WHITE, COLOR_SURFACE_LO);
-                ly += 16;
+                draw_string(20, ly, line, i == 0 ? COLOR_WHITE : COLOR_GRAY, COLOR_SURFACE_LO);
+                ly += 19;
             }
             showed_content = 1;
         }
     }
     if (!showed_content) {
-        draw_icon32(26, 106, ICON_USB, COLOR_ORANGE);
-        draw_string(76, 102, "DEVICE  192.168.7.2", COLOR_WHITE, COLOR_SURFACE_LO);
-        draw_string(76, 122, "HOST    192.168.7.1", COLOR_GRAY, COLOR_SURFACE_LO);
-        draw_string(76, 150, "USB networking starts at boot.", COLOR_GRAY, COLOR_SURFACE_LO);
-        draw_string(76, 170, "Use START SSH only to recover it.", COLOR_GRAY, COLOR_SURFACE_LO);
+        draw_string(20, 184, "DEVICE", COLOR_FAINT, COLOR_SURFACE_LO);
+        draw_string(88, 184, "192.168.7.2", COLOR_WHITE, COLOR_SURFACE_LO);
+        draw_string(264, 184, "HOST", COLOR_FAINT, COLOR_SURFACE_LO);
+        draw_string(320, 184, "192.168.7.1", COLOR_WHITE, COLOR_SURFACE_LO);
+        draw_string(20, 205, "USB networking is available at boot.", COLOR_GRAY, COLOR_SURFACE_LO);
     }
 
     draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
     draw_icon16(12, 247, ICON_USB, COLOR_ORANGE);
     draw_string(36, 246, "REMOTE ACCESS", COLOR_GRAY, COLOR_TOPBAR);
-    draw_string(340, 246, "192.168.7.2", COLOR_WHITE, COLOR_TOPBAR);
+    draw_string(368, 246, "192.168.7.2", COLOR_WHITE, COLOR_TOPBAR);
     fb_flip();
 }
 
@@ -1420,9 +1387,9 @@ static void show_usb_menu(void) {
             }
 
             /* Button 1: START SSH (x: 10..210, y: 30..66) */
-            if (px >= 10 && px <= 210 && py >= 30 && py <= 66) {
-                draw_rect(10, 32, 200, 32, COLOR_YELLOW);
-                draw_string(45, 40, "STARTING...", COLOR_BLACK, COLOR_YELLOW);
+            if (px >= 10 && px <= 230 && py >= 122 && py <= 172) {
+                draw_rect(10, 126, 220, 42, COLOR_YELLOW);
+                draw_string(72, 139, "STARTING...", COLOR_BLACK, COLOR_YELLOW);
                 fb_flip();
 
                 bt_exec_cmd("/usr/bin/usb_ssh.sh > /tmp/usb_out.txt 2>&1");
@@ -1433,9 +1400,9 @@ static void show_usb_menu(void) {
             }
 
             /* Button 2: STOP SSH (x: 220..420, y: 30..66) */
-            if (px >= 220 && px <= 420 && py >= 30 && py <= 66) {
-                draw_rect(220, 32, 200, 32, COLOR_YELLOW);
-                draw_string(276, 40, "STOPPING...", COLOR_BLACK, COLOR_YELLOW);
+            if (px >= 240 && px <= 470 && py >= 122 && py <= 172) {
+                draw_rect(240, 126, 230, 42, COLOR_YELLOW);
+                draw_string(306, 139, "STOPPING...", COLOR_BLACK, COLOR_YELLOW);
                 fb_flip();
 
                 bt_exec_cmd("/usr/bin/usb_stop.sh > /tmp/usb_out.txt 2>&1");
@@ -1454,22 +1421,17 @@ static void draw_tools_screen(void) {
     draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
     ui_header("TOOLS", COLOR_ORANGE, 1);
 
-    ui_card_shell(16, 48, 216, 150, COLOR_ORANGE, 0);
-    draw_icon32(34, 78, ICON_TERMINAL, COLOR_ORANGE);
-    draw_string_tracked(82, 78, "TERMINAL", COLOR_WHITE, COLOR_DARKGRAY);
-    draw_string(82, 104, "Shell & diagnostics", COLOR_GRAY, COLOR_DARKGRAY);
-    draw_rect(82, 138, 5, 5, COLOR_ORANGE);
-    draw_string(94, 132, "LOCAL", COLOR_ORANGE, COLOR_DARKGRAY);
+    ui_card_shell(16, 48, 216, 168, COLOR_ORANGE, 0);
+    draw_icon48(34, 78, ICON_TERMINAL, COLOR_ORANGE);
+    draw_string_tracked(94, 78, "TERMINAL", COLOR_WHITE, COLOR_DARKGRAY);
+    draw_string(94, 108, "Command line", COLOR_GRAY, COLOR_DARKGRAY);
+    draw_string(94, 142, "ON-DEVICE", COLOR_ORANGE, COLOR_DARKGRAY);
 
-    ui_card_shell(248, 48, 216, 150, COLOR_BLUE, 0);
-    draw_icon32(266, 78, ICON_USB, COLOR_BLUE);
-    draw_string_tracked(314, 78, "USB + SSH", COLOR_WHITE, COLOR_DARKGRAY);
-    draw_string(314, 104, "Remote access", COLOR_GRAY, COLOR_DARKGRAY);
-    draw_rect(314, 138, 5, 5, COLOR_BLUE);
-    draw_string(326, 132, "NETWORK", COLOR_BLUE, COLOR_DARKGRAY);
-
-    draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
-    draw_string(134, 246, "SYSTEM UTILITIES", COLOR_FAINT, COLOR_TOPBAR);
+    ui_card_shell(248, 48, 216, 168, COLOR_BLUE, 0);
+    draw_icon48(266, 78, ICON_USB, COLOR_BLUE);
+    draw_string_tracked(326, 78, "USB + SSH", COLOR_WHITE, COLOR_DARKGRAY);
+    draw_string(326, 108, "Remote connection", COLOR_GRAY, COLOR_DARKGRAY);
+    draw_string(326, 142, "192.168.7.2", COLOR_BLUE, COLOR_DARKGRAY);
     fb_flip();
 }
 
@@ -1493,13 +1455,13 @@ static void show_tools_menu(void) {
                 running = 0;
                 break;
             }
-            if (px >= 16 && px <= 232 && py >= 48 && py <= 198) {
+            if (px >= 16 && px <= 232 && py >= 48 && py <= 216) {
                 show_terminal();
                 draw_tools_screen();
                 reset_touch_state();
                 continue;
             }
-            if (px >= 248 && px <= 464 && py >= 48 && py <= 198) {
+            if (px >= 248 && px <= 464 && py >= 48 && py <= 216) {
                 show_usb_menu();
                 draw_tools_screen();
                 reset_touch_state();
@@ -1515,52 +1477,30 @@ static void draw_bluetooth_screen(const char *action_status) {
     draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
     ui_header("BLUETOOTH", COLOR_BLUE, 1);
 
-    ui_action_button(10, 34, 145, 32, "START AUDIO", COLOR_GREEN);
-    ui_action_button(165, 34, 145, 32, "SCAN PHONES", COLOR_BLUE);
-    ui_action_button(320, 34, 150, 32, "STOP AUDIO", COLOR_RED);
-
-    ui_inset(10, 74, 460, 156);
+    /* Hero identity card: product-facing information only. */
+    ui_card_shell(10, 38, 460, 76, COLOR_BLUE, 0);
+    draw_icon48(26, 52, ICON_BLUETOOTH, COLOR_BLUE);
+    draw_string_tracked(92, 48, "WIRELESS AUDIO", COLOR_WHITE, COLOR_DARKGRAY);
     if (action_status && action_status[0])
-        draw_string(20, 80, action_status, COLOR_AMBER, COLOR_SURFACE_LO);
+        draw_string(92, 72, action_status, COLOR_AMBER, COLOR_DARKGRAY);
+    else
+        draw_string(92, 72, "Ready for your phone", COLOR_AMBER, COLOR_DARKGRAY);
+    draw_string(92, 94, "TomTom ONE XL   PIN 0000", COLOR_GRAY, COLOR_DARKGRAY);
 
-    int fd = sys_open("/tmp/bt_out.txt", O_RDONLY, 0);
-    int showed_content = 0;
-    if (fd >= 0) {
-        long n = sys_read(fd, bt_view_buf, sizeof(bt_view_buf) - 1);
-        sys_close(fd);
-        if (n > 0) {
-            bt_view_buf[n] = '\0';
-            int total_lines = 0;
-            for (char *c = bt_view_buf; *c; c++) if (*c == '\n') total_lines++;
-            if (n > 0 && bt_view_buf[n - 1] != '\n') total_lines++;
-            int skip_lines = total_lines > 7 ? total_lines - 7 : 0;
-            char *p = bt_view_buf;
-            while (skip_lines > 0 && *p) if (*p++ == '\n') skip_lines--;
-            int ly = 102;
-            for (int i = 0; i < 7 && *p; i++) {
-                char line[60]; int lp = 0;
-                while (*p && *p != '\n' && lp < 56) line[lp++] = *p++;
-                if (*p == '\n') p++;
-                line[lp] = '\0';
-                draw_string(20, ly, line, COLOR_WHITE, COLOR_SURFACE_LO);
-                ly += 16;
-            }
-            showed_content = 1;
-        }
-    }
-    if (!showed_content) {
-        draw_icon32(26, 108, ICON_BLUETOOTH, COLOR_BLUE);
-        draw_string_tracked(76, 104, "A2DP AUDIO SINK", COLOR_WHITE, COLOR_SURFACE_LO);
-        draw_string(76, 130, "Name: TomTom ONE XL", COLOR_GRAY, COLOR_SURFACE_LO);
-        draw_string(76, 150, "PIN: 0000", COLOR_GRAY, COLOR_SURFACE_LO);
-        draw_string(76, 178, "Pair a phone, then play audio.", COLOR_WHITE, COLOR_SURFACE_LO);
-        draw_string(76, 198, "Volume follows the phone.", COLOR_BLUE, COLOR_SURFACE_LO);
-    }
+    /* Large, equal actions. */
+    ui_action_button(10, 124, 145, 44, "START", COLOR_GREEN);
+    ui_action_button(165, 124, 145, 44, "SCAN", COLOR_BLUE);
+    ui_action_button(320, 124, 150, 44, "STOP", COLOR_RED);
+
+    /* Simple guidance instead of transport/debug telemetry. */
+    ui_inset(10, 178, 460, 50);
+    draw_string(22, 186, "PAIR PHONE, THEN PLAY MUSIC", COLOR_WHITE, COLOR_SURFACE_LO);
+    draw_string(22, 206, "Volume is controlled from your phone", COLOR_GRAY, COLOR_SURFACE_LO);
 
     draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
     draw_icon16(12, 247, ICON_BLUETOOTH, COLOR_BLUE);
-    draw_string(36, 246, "A2DP", COLOR_GRAY, COLOR_TOPBAR);
-    draw_string(270, 246, "VOLUME CONTROL: PHONE", COLOR_WHITE, COLOR_TOPBAR);
+    draw_string(36, 246, "A2DP AUDIO", COLOR_GRAY, COLOR_TOPBAR);
+    draw_string(344, 246, "PHONE VOLUME", COLOR_WHITE, COLOR_TOPBAR);
     fb_flip();
 }
 
@@ -1588,9 +1528,9 @@ static void show_bluetooth_menu(void) {
             }
 
             /* Button 1: START AUDIO (x: 10..155, y: 30..66) */
-            if (px >= 10 && px <= 155 && py >= 30 && py <= 66) {
-                draw_rect(10, 32, 145, 32, COLOR_YELLOW);
-                draw_string(30, 40, "INITIALIZING...", COLOR_BLACK, COLOR_YELLOW);
+            if (px >= 10 && px <= 155 && py >= 114 && py <= 164) {
+                draw_rect(10, 118, 145, 42, COLOR_YELLOW);
+                draw_string(24, 131, "STARTING...", COLOR_BLACK, COLOR_YELLOW);
                 fb_flip();
 
                 bt_exec_cmd("/usr/bin/bt_tool.sh start > /tmp/bt_out.txt 2>&1");
@@ -1601,9 +1541,9 @@ static void show_bluetooth_menu(void) {
             }
 
             /* Button 2: SCAN PHONES (x: 165..310, y: 30..66) */
-            if (px >= 165 && px <= 310 && py >= 30 && py <= 66) {
-                draw_rect(165, 32, 145, 32, COLOR_YELLOW);
-                draw_string(185, 40, "SCANNING...", COLOR_BLACK, COLOR_YELLOW);
+            if (px >= 165 && px <= 310 && py >= 114 && py <= 164) {
+                draw_rect(165, 118, 145, 42, COLOR_YELLOW);
+                draw_string(193, 131, "SCANNING...", COLOR_BLACK, COLOR_YELLOW);
                 fb_flip();
 
                 bt_exec_cmd("/usr/bin/bt_tool.sh scan > /tmp/bt_out.txt 2>&1");
@@ -1614,9 +1554,9 @@ static void show_bluetooth_menu(void) {
             }
 
             /* Button 3: STOP AUDIO (x: 320..470, y: 30..66) */
-            if (px >= 320 && px <= 470 && py >= 30 && py <= 66) {
-                draw_rect(320, 32, 150, 32, COLOR_YELLOW);
-                draw_string(350, 40, "STOPPING...", COLOR_BLACK, COLOR_YELLOW);
+            if (px >= 320 && px <= 470 && py >= 114 && py <= 164) {
+                draw_rect(320, 118, 150, 42, COLOR_YELLOW);
+                draw_string(348, 131, "STOPPING...", COLOR_BLACK, COLOR_YELLOW);
                 fb_flip();
 
                 bt_exec_cmd("/usr/bin/bt_tool.sh stop > /tmp/bt_out.txt 2>&1");
