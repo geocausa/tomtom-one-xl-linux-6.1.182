@@ -18,20 +18,27 @@
 
 #define RGB565(r, g, b) (((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3))
 
-#define COLOR_BG        RGB565(18, 22, 32)
-#define COLOR_TOPBAR    RGB565(10, 14, 22)
-#define COLOR_BAR_LINE  RGB565(0, 150, 255)
+/* V2 "Night Cockpit" theme: restrained graphite + functional accents. */
+#define COLOR_BG        RGB565(16, 20, 24)
+#define COLOR_TOPBAR    RGB565(8, 12, 16)
+#define COLOR_BAR_LINE  RGB565(248, 176, 32)
 #define COLOR_BLACK     RGB565(0, 0, 0)
-#define COLOR_WHITE     RGB565(255, 255, 255)
-#define COLOR_GRAY      RGB565(130, 140, 155)
-#define COLOR_DARKGRAY  RGB565(35, 42, 58)
-#define COLOR_BLUE      RGB565(0, 140, 255)
-#define COLOR_CYAN      RGB565(0, 215, 235)
-#define COLOR_GREEN     RGB565(45, 215, 85)
-#define COLOR_RED       RGB565(255, 65, 65)
-#define COLOR_YELLOW    RGB565(255, 205, 45)
-#define COLOR_ORANGE    RGB565(255, 140, 30)
-#define COLOR_PURPLE    RGB565(185, 75, 245)
+#define COLOR_WHITE     RGB565(232, 236, 248)
+#define COLOR_GRAY      RGB565(144, 160, 184)
+#define COLOR_DARKGRAY  RGB565(32, 40, 56)
+#define COLOR_BLUE      RGB565(96, 160, 248)
+#define COLOR_CYAN      RGB565(64, 200, 184)
+#define COLOR_GREEN     RGB565(112, 200, 72)
+#define COLOR_RED       RGB565(232, 80, 64)
+#define COLOR_YELLOW    RGB565(248, 176, 32)
+#define COLOR_ORANGE    RGB565(248, 144, 32)
+#define COLOR_PURPLE    RGB565(152, 104, 232)
+#define COLOR_SURFACE_HI RGB565(40, 48, 64)
+#define COLOR_SURFACE_LO RGB565(16, 24, 32)
+#define COLOR_HAIRLINE  RGB565(56, 68, 88)
+#define COLOR_HIGHLIGHT RGB565(88, 104, 136)
+#define COLOR_FAINT     RGB565(96, 108, 128)
+#define COLOR_AMBER     COLOR_YELLOW
 
 #define MAX_EV_FDS 8
 static int ev_fds[MAX_EV_FDS];
@@ -178,6 +185,109 @@ static int parse_int(const char *s, int *out_pos) {
     }
     if (out_pos) *out_pos = p;
     return val * sign;
+}
+
+static const unsigned short ICON_CALIBRATE[16] = { 0x1818, 0x1818, 0x0000, 0x0180, 0x0180, 0x07e0, 0x07e0, 0x1ff8, 0x1ff8, 0x07e0, 0x07e0, 0x0180, 0x0180, 0x0000, 0x1818, 0x1818 };
+static const unsigned short ICON_TOOLS[16] = { 0x3c00, 0x7e00, 0x3c00, 0x1c00, 0x0e00, 0x0700, 0x0380, 0x01c0, 0x00e0, 0x0070, 0x0038, 0x001c, 0x003e, 0x007f, 0x003e, 0x0000 };
+static const unsigned short ICON_FOLDER[16] = { 0x0000, 0x0000, 0x3f00, 0x3f00, 0x3ffc, 0x3ffc, 0x300c, 0x300c, 0x300c, 0x300c, 0x300c, 0x300c, 0x3ffc, 0x3ffc, 0x0000, 0x0000 };
+static const unsigned short ICON_BLUETOOTH[16] = { 0x0180, 0x01c0, 0x01e0, 0x01b0, 0x1998, 0x0db0, 0x07c0, 0x0380, 0x07c0, 0x0db0, 0x1998, 0x01b0, 0x01e0, 0x01c0, 0x0180, 0x0000 };
+static const unsigned short ICON_TERMINAL[16] = { 0x0000, 0x0000, 0x1800, 0x0c00, 0x0600, 0x0300, 0x0180, 0x0300, 0x0600, 0x0c00, 0x1800, 0x007c, 0x007c, 0x0000, 0x0000, 0x0000 };
+static const unsigned short ICON_USB[16] = { 0x0180, 0x0180, 0x03c0, 0x0180, 0x0180, 0x199c, 0x0db0, 0x07f0, 0x0180, 0x0180, 0x0180, 0x03c0, 0x07e0, 0x03c0, 0x0000, 0x0000 };
+static const unsigned short ICON_BACK[16] = { 0x0000, 0x0000, 0x0600, 0x0c00, 0x1800, 0x3ffc, 0x7ff8, 0x3ffc, 0x1800, 0x0c00, 0x0600, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000 };
+static const unsigned short ICON_POWER[16] = { 0x0180, 0x0180, 0x0180, 0x0180, 0x1998, 0x318c, 0x6186, 0x6006, 0x6006, 0x6006, 0x300c, 0x1818, 0x0ff0, 0x07e0, 0x0000, 0x0000 };
+static const unsigned short ICON_FILE[16] = { 0x0ff0, 0x0c38, 0x0c78, 0x0cd8, 0x0c18, 0x0c18, 0x0c18, 0x0c18, 0x0c18, 0x0c18, 0x0c18, 0x0c18, 0x0ff8, 0x0000, 0x0000, 0x0000 };
+
+
+/* V2 lightweight UI primitives. All drawing stays integer-only/static. */
+static void draw_outline(int x, int y, int w, int h, unsigned short color) {
+    if (w <= 0 || h <= 0) return;
+    for (int i = 0; i < w; i++) {
+        draw_pixel(x + i, y, color);
+        draw_pixel(x + i, y + h - 1, color);
+    }
+    for (int j = 0; j < h; j++) {
+        draw_pixel(x, y + j, color);
+        draw_pixel(x + w - 1, y + j, color);
+    }
+}
+
+static void draw_string_tracked(int x, int y, const char *str,
+                                unsigned short fg, unsigned short bg) {
+    while (*str) {
+        draw_char(x, y, *str, fg, bg);
+        x += 9;
+        str++;
+    }
+}
+
+static void draw_icon16(int x, int y, const unsigned short *rows,
+                        unsigned short fg) {
+    for (int r = 0; r < 16; r++) {
+        unsigned short bits = rows[r];
+        for (int c = 0; c < 16; c++) {
+            if (bits & (0x8000 >> c)) draw_pixel(x + c, y + r, fg);
+        }
+    }
+}
+
+static void draw_icon32(int x, int y, const unsigned short *rows,
+                        unsigned short fg) {
+    for (int r = 0; r < 16; r++) {
+        unsigned short bits = rows[r];
+        for (int c = 0; c < 16; c++) {
+            if (bits & (0x8000 >> c)) {
+                int px = x + c * 2;
+                int py = y + r * 2;
+                draw_pixel(px, py, fg); draw_pixel(px + 1, py, fg);
+                draw_pixel(px, py + 1, fg); draw_pixel(px + 1, py + 1, fg);
+            }
+        }
+    }
+}
+
+static void ui_card_shell(int x, int y, int w, int h,
+                          unsigned short accent, int pressed) {
+    unsigned short fill = pressed ? COLOR_SURFACE_HI : COLOR_DARKGRAY;
+    draw_rect(x, y, w, h, fill);
+    draw_outline(x, y, w, h, COLOR_HAIRLINE);
+    if (w > 4) draw_rect(x + 2, y + 1, w - 4, 1, COLOR_HIGHLIGHT);
+    draw_rect(x + 1, y + 1, 4, h - 2, accent);
+    /* two-pixel cut corners: cheap visual softness without AA */
+    draw_pixel(x, y, COLOR_BG); draw_pixel(x + 1, y, COLOR_BG);
+    draw_pixel(x, y + 1, COLOR_BG);
+    draw_pixel(x + w - 1, y, COLOR_BG); draw_pixel(x + w - 2, y, COLOR_BG);
+    draw_pixel(x + w - 1, y + 1, COLOR_BG);
+    draw_pixel(x, y + h - 1, COLOR_BG); draw_pixel(x + 1, y + h - 1, COLOR_BG);
+    draw_pixel(x, y + h - 2, COLOR_BG);
+    draw_pixel(x + w - 1, y + h - 1, COLOR_BG); draw_pixel(x + w - 2, y + h - 1, COLOR_BG);
+    draw_pixel(x + w - 1, y + h - 2, COLOR_BG);
+}
+
+static void ui_action_button(int x, int y, int w, int h, const char *label,
+                             unsigned short accent) {
+    draw_rect(x, y, w, h, COLOR_DARKGRAY);
+    draw_outline(x, y, w, h, COLOR_HAIRLINE);
+    draw_rect(x + 1, y + 1, 4, h - 2, accent);
+    draw_rect(x + 5, y + 1, w - 7, 1, COLOR_HIGHLIGHT);
+    int lx = x + (w - tiny_strlen(label) * 8) / 2;
+    draw_string(lx, y + (h - 16) / 2, label, COLOR_WHITE, COLOR_DARKGRAY);
+}
+
+static void ui_inset(int x, int y, int w, int h) {
+    draw_rect(x, y, w, h, COLOR_SURFACE_LO);
+    draw_outline(x, y, w, h, COLOR_HAIRLINE);
+}
+
+static void ui_header(const char *title, unsigned short accent, int show_back) {
+    draw_rect(0, 0, FB_WIDTH, 30, COLOR_TOPBAR);
+    draw_rect(0, 28, FB_WIDTH, 2, accent);
+    draw_string_tracked(12, 6, title, COLOR_WHITE, COLOR_TOPBAR);
+    if (show_back) {
+        draw_rect(405, 2, 70, 24, COLOR_DARKGRAY);
+        draw_outline(405, 2, 70, 24, COLOR_HAIRLINE);
+        draw_icon16(409, 6, ICON_BACK, accent);
+        draw_string(430, 6, "BACK", COLOR_WHITE, COLOR_DARKGRAY);
+    }
 }
 
 /* Calibration Loading & Coordinate Mapping */
@@ -333,55 +443,37 @@ typedef struct {
 } Tile;
 
 static Tile tiles[4] = {
-    { 16, 38, 216, 104, "CALIBRATE", "4-Point Touch Setup", COLOR_CYAN, 0 },
-    { 248, 38, 216, 104, "TOOLS", "Terminal & USB SSH", COLOR_ORANGE, 0 },
-    { 16, 152, 216, 104, "EXPLORER", "Filesystem & SD Card", COLOR_GREEN, 0 },
-    { 248, 152, 216, 104, "BLUETOOTH", "Wireless Audio Sink", COLOR_PURPLE, 0 }
+    { 16, 38, 216, 104, "CALIBRATE", "Touch setup", COLOR_CYAN, 0 },
+    { 248, 38, 216, 104, "TOOLS", "System & remote", COLOR_ORANGE, 0 },
+    { 16, 152, 216, 104, "EXPLORER", "Files & storage", COLOR_GREEN, 0 },
+    { 248, 152, 216, 104, "BLUETOOTH", "Wireless audio", COLOR_BLUE, 0 }
 };
 
 static void draw_top_bar(void) {
-    draw_rect(0, 0, FB_WIDTH, 26, COLOR_TOPBAR);
-    draw_rect(0, 26, FB_WIDTH, 2, COLOR_BAR_LINE);
-    draw_string(8, 5, "TOMTOM", COLOR_WHITE, COLOR_TOPBAR);
-
-    draw_string(68, 5, "RAW:", COLOR_GRAY, COLOR_TOPBAR);
-    draw_num(100, 5, cur_raw_x, COLOR_YELLOW, COLOR_TOPBAR);
-    draw_string(132, 5, ",", COLOR_GRAY, COLOR_TOPBAR);
-    draw_num(140, 5, cur_raw_y, COLOR_YELLOW, COLOR_TOPBAR);
-
-    draw_string(176, 5, "PX:", COLOR_GRAY, COLOR_TOPBAR);
-    draw_num(200, 5, cur_px_x, COLOR_GREEN, COLOR_TOPBAR);
-    draw_string(228, 5, ",", COLOR_GRAY, COLOR_TOPBAR);
-    draw_num(236, 5, cur_px_y, COLOR_GREEN, COLOR_TOPBAR);
-
-    draw_string(272, 5, "EV:", COLOR_GRAY, COLOR_TOPBAR);
-    draw_num(296, 5, num_ev_fds, COLOR_CYAN, COLOR_TOPBAR);
-
-    draw_string(312, 5, "K:", COLOR_GRAY, COLOR_TOPBAR);
-    draw_num(328, 5, last_key_code, COLOR_PURPLE, COLOR_TOPBAR);
-
-    draw_string(360, 5, "IP:192.168.7.2", COLOR_WHITE, COLOR_TOPBAR);
+    draw_rect(0, 0, FB_WIDTH, 30, COLOR_TOPBAR);
+    draw_rect(0, 28, FB_WIDTH, 2, COLOR_AMBER);
+    draw_string_tracked(12, 6, "ONE XL", COLOR_WHITE, COLOR_TOPBAR);
+    draw_string(212, 6, "HOME", COLOR_GRAY, COLOR_TOPBAR);
+    draw_icon16(394, 6, ICON_POWER, COLOR_AMBER);
+    draw_string(416, 6, "POWER", COLOR_GRAY, COLOR_TOPBAR);
 }
 
 static void draw_tile(Tile *t) {
-    unsigned short bg_color = t->is_pressed ? COLOR_GRAY : COLOR_DARKGRAY;
-    draw_rect(t->x, t->y, t->w, t->h, bg_color);
-    draw_rect(t->x, t->y, t->w, 6, t->color);
+    int idx = (int)(t - tiles);
+    static const unsigned short *home_icons[4] = {
+        ICON_CALIBRATE, ICON_TOOLS, ICON_FOLDER, ICON_BLUETOOTH
+    };
+    static const char *micro[4] = { "INPUT", "SYSTEM", "STORAGE", "A2DP" };
+    unsigned short accent = (idx == 3) ? COLOR_BLUE : t->color;
+    ui_card_shell(t->x, t->y, t->w, t->h, accent, t->is_pressed);
+    unsigned short fill = t->is_pressed ? COLOR_SURFACE_HI : COLOR_DARKGRAY;
 
-    int title_x = t->x + (t->w - tiny_strlen(t->title) * 8) / 2;
-    draw_string(title_x, t->y + 34, t->title, COLOR_WHITE, bg_color);
+    draw_icon32(t->x + 18, t->y + 20, home_icons[idx], accent);
+    draw_string_tracked(t->x + 64, t->y + 18, t->title, COLOR_WHITE, fill);
+    draw_string(t->x + 64, t->y + 43, t->subtitle, COLOR_GRAY, fill);
 
-    int sub_x = t->x + (t->w - tiny_strlen(t->subtitle) * 8) / 2;
-    draw_string(sub_x, t->y + 64, t->subtitle, t->color, bg_color);
-
-    for (int i = 0; i < t->w; i++) {
-        draw_pixel(t->x + i, t->y, t->color);
-        draw_pixel(t->x + i, t->y + t->h - 1, COLOR_DARKGRAY);
-    }
-    for (int j = 0; j < t->h; j++) {
-        draw_pixel(t->x, t->y + j, t->color);
-        draw_pixel(t->x + t->w - 1, t->y + j, COLOR_DARKGRAY);
-    }
+    draw_rect(t->x + 64, t->y + 72, 5, 5, accent);
+    draw_string(t->x + 76, t->y + 66, micro[idx], accent, fill);
 }
 
 static void draw_launcher(void) {
@@ -659,14 +751,11 @@ static void flash_key(const KeyDef *k) {
 }
 
 static void draw_terminal_screen(const char *input_buf) {
-    draw_rect(0, 0, FB_WIDTH, 144, COLOR_BLACK);
-    draw_rect(0, 0, FB_WIDTH, 22, COLOR_ORANGE);
-    draw_string(8, 3, "INTERACTIVE SHELL (/bin/sh)", COLOR_BLACK, COLOR_ORANGE);
+    draw_rect(0, 0, FB_WIDTH, 146, COLOR_SURFACE_LO);
+    ui_header("TERMINAL", COLOR_ORANGE, 0);
 
-    draw_rect(340, 2, 60, 18, COLOR_DARKGRAY);
-    draw_string(352, 3, "CLEAR", COLOR_WHITE, COLOR_DARKGRAY);
-    draw_rect(410, 2, 65, 18, COLOR_RED);
-    draw_string(425, 3, "EXIT", COLOR_WHITE, COLOR_RED);
+    ui_action_button(336, 2, 64, 24, "CLEAR", COLOR_ORANGE);
+    ui_action_button(405, 2, 70, 24, "EXIT", COLOR_RED);
 
     int start_idx = 0;
     if (term_num_lines > 6) start_idx = term_num_lines - 6;
@@ -886,9 +975,9 @@ static int is_entry_dir(const char *parent, const char *name, unsigned char dtyp
 }
 
 static void show_file_viewer(const char *filepath) {
-    draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BLACK);
-    draw_rect(0, 0, FB_WIDTH, 24, COLOR_BLUE);
-    draw_string(10, 5, filepath, COLOR_WHITE, COLOR_BLUE);
+    draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_SURFACE_LO);
+    ui_header("FILE VIEWER", COLOR_GREEN, 0);
+    draw_string(12, 34, filepath, COLOR_GRAY, COLOR_SURFACE_LO);
 
     int fd = sys_open(filepath, O_RDONLY, 0);
     if (fd >= 0) {
@@ -896,7 +985,7 @@ static void show_file_viewer(const char *filepath) {
         sys_close(fd);
         if (n > 0) {
             viewer_buf[n] = '\0';
-            int ly = 32;
+            int ly = 54;
             char *p = viewer_buf;
             for (int i = 0; i < 11 && *p; i++) {
                 char line[60];
@@ -1180,25 +1269,23 @@ static void quiesce_bt_audio(void) {
 
 static void show_power_menu(void) {
     draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
-    draw_rect(0, 0, FB_WIDTH, 26, COLOR_RED);
-    draw_string(180, 5, "POWER CONTROL", COLOR_WHITE, COLOR_RED);
+    ui_header("POWER", COLOR_RED, 0);
 
-    /* Reboot / USB Button */
-    draw_rect(40, 36, 400, 58, COLOR_ORANGE);
-    draw_string(148, 50, "REBOOT", COLOR_BLACK, COLOR_ORANGE);
-    draw_string(112, 72, "Restart the TomTom without powering off", COLOR_BLACK, COLOR_ORANGE);
+    ui_card_shell(40, 40, 400, 54, COLOR_ORANGE, 0);
+    draw_icon32(58, 51, ICON_POWER, COLOR_ORANGE);
+    draw_string_tracked(108, 50, "REBOOT", COLOR_WHITE, COLOR_DARKGRAY);
+    draw_string(108, 71, "Restart the device", COLOR_GRAY, COLOR_DARKGRAY);
 
-    /* Power Off Button */
-    draw_rect(40, 104, 400, 58, COLOR_RED);
-    draw_string(155, 118, "POWER OFF (SHUTDOWN)", COLOR_WHITE, COLOR_RED);
-    draw_string(140, 140, "Cleanly syncs and powers off hardware", COLOR_YELLOW, COLOR_RED);
+    ui_card_shell(40, 106, 400, 54, COLOR_RED, 0);
+    draw_icon32(58, 117, ICON_POWER, COLOR_RED);
+    draw_string_tracked(108, 116, "POWER OFF", COLOR_WHITE, COLOR_DARKGRAY);
+    draw_string(108, 137, "Sync and shut down", COLOR_GRAY, COLOR_DARKGRAY);
 
-    /* Cancel Button */
-    draw_rect(40, 172, 400, 58, COLOR_DARKGRAY);
-    draw_string(210, 186, "CANCEL", COLOR_WHITE, COLOR_DARKGRAY);
-    draw_string(170, 208, "Return to main screen", COLOR_GRAY, COLOR_DARKGRAY);
+    ui_card_shell(40, 172, 400, 54, COLOR_GRAY, 0);
+    draw_string_tracked(188, 184, "CANCEL", COLOR_WHITE, COLOR_DARKGRAY);
+    draw_string(152, 205, "Return to previous screen", COLOR_GRAY, COLOR_DARKGRAY);
 
-    draw_string(55, 245, "Top button toggles this menu. Reboot uses TomTom SFTRST.", COLOR_GRAY, COLOR_BG);
+    draw_string(92, 246, "PHYSICAL POWER KEY OPENS THIS MENU", COLOR_FAINT, COLOR_BG);
     fb_flip();
 
     sleep_ms(300);
@@ -1266,37 +1353,14 @@ static void bt_exec_cmd(const char *cmd) {
 
 static void draw_usb_screen(const char *action_status) {
     draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
+    ui_header("USB + SSH", COLOR_ORANGE, 1);
 
-    /* Top Header Bar */
-    draw_rect(0, 0, FB_WIDTH, 26, COLOR_PURPLE);
-    draw_string(10, 5, "USB NETWORK & SSH", COLOR_WHITE, COLOR_PURPLE);
+    ui_action_button(10, 34, 200, 32, "START SSH", COLOR_GREEN);
+    ui_action_button(220, 34, 200, 32, "STOP SSH", COLOR_RED);
 
-    /* Back Button: x = 410, y = 2, w = 65, h = 22 */
-    draw_rect(410, 2, 65, 22, COLOR_RED);
-    draw_string(425, 5, "BACK", COLOR_WHITE, COLOR_RED);
-
-    /* Button 1: START SSH (x: 10..210, y: 30..66) */
-    draw_rect(10, 32, 200, 32, COLOR_GREEN);
-    draw_string(45, 40, "START SSH", COLOR_BLACK, COLOR_GREEN);
-
-    /* Button 2: STOP SSH (x: 220..420, y: 30..66) */
-    draw_rect(220, 32, 200, 32, COLOR_RED);
-    draw_string(288, 40, "STOP SSH", COLOR_WHITE, COLOR_RED);
-
-    /* Central Display Box */
-    draw_rect(10, 70, 460, 162, COLOR_BLACK);
-    for (int b = 0; b < 460; b++) {
-        draw_pixel(10 + b, 70, COLOR_PURPLE);
-        draw_pixel(10 + b, 231, COLOR_PURPLE);
-    }
-    for (int b = 0; b < 162; b++) {
-        draw_pixel(10, 70 + b, COLOR_PURPLE);
-        draw_pixel(469, 70 + b, COLOR_PURPLE);
-    }
-
-    if (action_status && action_status[0]) {
-        draw_string(20, 76, action_status, COLOR_YELLOW, COLOR_BLACK);
-    }
+    ui_inset(10, 74, 460, 156);
+    if (action_status && action_status[0])
+        draw_string(20, 80, action_status, COLOR_AMBER, COLOR_SURFACE_LO);
 
     int fd = sys_open("/tmp/usb_out.txt", O_RDONLY, 0);
     int showed_content = 0;
@@ -1305,33 +1369,31 @@ static void draw_usb_screen(const char *action_status) {
         sys_close(fd);
         if (n > 0) {
             usb_view_buf[n] = '\0';
-            int ly = 94;
+            int ly = 102;
             char *p = usb_view_buf;
-            for (int i = 0; i < 8 && *p; i++) {
-                char line[60];
-                int lp = 0;
+            for (int i = 0; i < 7 && *p; i++) {
+                char line[60]; int lp = 0;
                 while (*p && *p != '\n' && lp < 56) line[lp++] = *p++;
                 if (*p == '\n') p++;
                 line[lp] = '\0';
-                draw_string(20, ly, line, COLOR_WHITE, COLOR_BLACK);
+                draw_string(20, ly, line, COLOR_WHITE, COLOR_SURFACE_LO);
                 ly += 16;
             }
             showed_content = 1;
         }
     }
-
     if (!showed_content) {
-        draw_string(20, 96,  "Device: 192.168.7.2 on usb0", COLOR_CYAN, COLOR_BLACK);
-        draw_string(20, 114, "PC: set your usb interface to 192.168.7.1", COLOR_CYAN, COLOR_BLACK);
-        draw_string(20, 132, "ssh -i key root@192.168.7.2", COLOR_GREEN, COLOR_BLACK);
-        draw_string(20, 150, "----------------------------------------------------", COLOR_GRAY, COLOR_BLACK);
-        draw_string(20, 168, "USB + SSH start automatically at boot.", COLOR_WHITE, COLOR_BLACK);
-        draw_string(20, 186, "Tap START SSH to restart them if needed.", COLOR_WHITE, COLOR_BLACK);
+        draw_icon32(26, 106, ICON_USB, COLOR_ORANGE);
+        draw_string(76, 102, "DEVICE  192.168.7.2", COLOR_WHITE, COLOR_SURFACE_LO);
+        draw_string(76, 122, "HOST    192.168.7.1", COLOR_GRAY, COLOR_SURFACE_LO);
+        draw_string(76, 150, "USB networking starts at boot.", COLOR_GRAY, COLOR_SURFACE_LO);
+        draw_string(76, 170, "Use START SSH only to recover it.", COLOR_GRAY, COLOR_SURFACE_LO);
     }
 
     draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
-    draw_string(10, 246, "DEV 192.168.7.2 | PC 192.168.7.1", COLOR_GRAY, COLOR_TOPBAR);
-
+    draw_icon16(12, 247, ICON_USB, COLOR_ORANGE);
+    draw_string(36, 246, "REMOTE ACCESS", COLOR_GRAY, COLOR_TOPBAR);
+    draw_string(340, 246, "192.168.7.2", COLOR_WHITE, COLOR_TOPBAR);
     fb_flip();
 }
 
@@ -1390,24 +1452,24 @@ static void show_usb_menu(void) {
 
 static void draw_tools_screen(void) {
     draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
-    draw_rect(0, 0, FB_WIDTH, 26, COLOR_ORANGE);
-    draw_string(10, 5, "TOOLS", COLOR_BLACK, COLOR_ORANGE);
+    ui_header("TOOLS", COLOR_ORANGE, 1);
 
-    draw_rect(410, 2, 65, 22, COLOR_RED);
-    draw_string(425, 5, "BACK", COLOR_WHITE, COLOR_RED);
+    ui_card_shell(16, 48, 216, 150, COLOR_ORANGE, 0);
+    draw_icon32(34, 78, ICON_TERMINAL, COLOR_ORANGE);
+    draw_string_tracked(82, 78, "TERMINAL", COLOR_WHITE, COLOR_DARKGRAY);
+    draw_string(82, 104, "Shell & diagnostics", COLOR_GRAY, COLOR_DARKGRAY);
+    draw_rect(82, 138, 5, 5, COLOR_ORANGE);
+    draw_string(94, 132, "LOCAL", COLOR_ORANGE, COLOR_DARKGRAY);
 
-    draw_rect(16, 48, 216, 150, COLOR_DARKGRAY);
-    draw_rect(16, 48, 216, 6, COLOR_ORANGE);
-    draw_string(84, 92, "TERMINAL", COLOR_WHITE, COLOR_DARKGRAY);
-    draw_string(48, 122, "Linux Shell & Logs", COLOR_ORANGE, COLOR_DARKGRAY);
-
-    draw_rect(248, 48, 216, 150, COLOR_DARKGRAY);
-    draw_rect(248, 48, 216, 6, COLOR_PURPLE);
-    draw_string(304, 92, "USB + SSH", COLOR_WHITE, COLOR_DARKGRAY);
-    draw_string(280, 122, "Network & Remote", COLOR_PURPLE, COLOR_DARKGRAY);
+    ui_card_shell(248, 48, 216, 150, COLOR_BLUE, 0);
+    draw_icon32(266, 78, ICON_USB, COLOR_BLUE);
+    draw_string_tracked(314, 78, "USB + SSH", COLOR_WHITE, COLOR_DARKGRAY);
+    draw_string(314, 104, "Remote access", COLOR_GRAY, COLOR_DARKGRAY);
+    draw_rect(314, 138, 5, 5, COLOR_BLUE);
+    draw_string(326, 132, "NETWORK", COLOR_BLUE, COLOR_DARKGRAY);
 
     draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
-    draw_string(10, 246, "Terminal and USB networking grouped here", COLOR_GRAY, COLOR_TOPBAR);
+    draw_string(134, 246, "SYSTEM UTILITIES", COLOR_FAINT, COLOR_TOPBAR);
     fb_flip();
 }
 
@@ -1451,45 +1513,16 @@ static void show_tools_menu(void) {
 
 static void draw_bluetooth_screen(const char *action_status) {
     draw_rect(0, 0, FB_WIDTH, FB_HEIGHT, COLOR_BG);
+    ui_header("BLUETOOTH", COLOR_BLUE, 1);
 
-    /* Top Header Bar */
-    draw_rect(0, 0, FB_WIDTH, 26, COLOR_PURPLE);
-    draw_string(10, 5, "BLUETOOTH MANAGER & AUDIO SINK", COLOR_WHITE, COLOR_PURPLE);
+    ui_action_button(10, 34, 145, 32, "START AUDIO", COLOR_GREEN);
+    ui_action_button(165, 34, 145, 32, "SCAN PHONES", COLOR_BLUE);
+    ui_action_button(320, 34, 150, 32, "STOP AUDIO", COLOR_RED);
 
-    /* Back Button: x = 410, y = 2, w = 65, h = 22 */
-    draw_rect(410, 2, 65, 22, COLOR_RED);
-    draw_string(425, 5, "BACK", COLOR_WHITE, COLOR_RED);
+    ui_inset(10, 74, 460, 156);
+    if (action_status && action_status[0])
+        draw_string(20, 80, action_status, COLOR_AMBER, COLOR_SURFACE_LO);
 
-    /* Control Buttons: y = 32, h = 32 */
-    /* Button 1: START / INIT */
-    draw_rect(10, 32, 145, 32, COLOR_BLUE);
-    draw_string(34, 40, "START AUDIO", COLOR_WHITE, COLOR_BLUE);
-
-    /* Button 2: SCAN PHONES */
-    draw_rect(165, 32, 145, 32, COLOR_ORANGE);
-    draw_string(185, 40, "SCAN PHONES", COLOR_WHITE, COLOR_ORANGE);
-
-    /* Button 3: SPEAKER MODE */
-    draw_rect(320, 32, 150, 32, COLOR_GREEN);
-    draw_string(355, 40, "STOP AUDIO", COLOR_BLACK, COLOR_GREEN);
-
-    /* Central Display Box */
-    draw_rect(10, 70, 460, 162, COLOR_BLACK);
-    /* Border around central display */
-    for (int b = 0; b < 460; b++) {
-        draw_pixel(10 + b, 70, COLOR_PURPLE);
-        draw_pixel(10 + b, 231, COLOR_PURPLE);
-    }
-    for (int b = 0; b < 162; b++) {
-        draw_pixel(10, 70 + b, COLOR_PURPLE);
-        draw_pixel(469, 70 + b, COLOR_PURPLE);
-    }
-
-    if (action_status && action_status[0]) {
-        draw_string(20, 76, action_status, COLOR_YELLOW, COLOR_BLACK);
-    }
-
-    /* Read and display /tmp/bt_out.txt if present */
     int fd = sys_open("/tmp/bt_out.txt", O_RDONLY, 0);
     int showed_content = 0;
     if (fd >= 0) {
@@ -1497,50 +1530,37 @@ static void draw_bluetooth_screen(const char *action_status) {
         sys_close(fd);
         if (n > 0) {
             bt_view_buf[n] = '\0';
-            /* Count total lines in buffer */
             int total_lines = 0;
-            for (char *c = bt_view_buf; *c; c++) {
-                if (*c == '\n') total_lines++;
-            }
+            for (char *c = bt_view_buf; *c; c++) if (*c == '\n') total_lines++;
             if (n > 0 && bt_view_buf[n - 1] != '\n') total_lines++;
-
-            /* Display up to 8 latest lines */
-            int max_display = 8;
-            int skip_lines = (total_lines > max_display) ? (total_lines - max_display) : 0;
-
+            int skip_lines = total_lines > 7 ? total_lines - 7 : 0;
             char *p = bt_view_buf;
-            while (skip_lines > 0 && *p) {
-                if (*p++ == '\n') skip_lines--;
-            }
-
-            int ly = 94;
-            for (int i = 0; i < max_display && *p; i++) {
-                char line[60];
-                int lp = 0;
+            while (skip_lines > 0 && *p) if (*p++ == '\n') skip_lines--;
+            int ly = 102;
+            for (int i = 0; i < 7 && *p; i++) {
+                char line[60]; int lp = 0;
                 while (*p && *p != '\n' && lp < 56) line[lp++] = *p++;
                 if (*p == '\n') p++;
                 line[lp] = '\0';
-                draw_string(20, ly, line, COLOR_WHITE, COLOR_BLACK);
+                draw_string(20, ly, line, COLOR_WHITE, COLOR_SURFACE_LO);
                 ly += 16;
             }
             showed_content = 1;
         }
     }
-
     if (!showed_content) {
-        draw_string(20, 96,  "CSR BlueCore 3 @ 460800 baud (/dev/ttySAC2)", COLOR_CYAN, COLOR_BLACK);
-        draw_string(20, 114, "Audio Codec: Wolfson WM8711 DAC (I2S Stereo)", COLOR_CYAN, COLOR_BLACK);
-        draw_string(20, 132, "Device Name: 'TomTom ONE XL' | PIN: 0000", COLOR_GREEN, COLOR_BLACK);
-        draw_string(20, 150, "----------------------------------------------------", COLOR_GRAY, COLOR_BLACK);
-        draw_string(20, 168, "1. Tap [START AUDIO] to enable A2DP sink", COLOR_WHITE, COLOR_BLACK);
-        draw_string(20, 186, "2. Tap [SCAN PHONES] to discover nearby phones", COLOR_WHITE, COLOR_BLACK);
-        draw_string(20, 204, "3. Connect phone to 'TomTom ONE XL' and play", COLOR_YELLOW, COLOR_BLACK);
+        draw_icon32(26, 108, ICON_BLUETOOTH, COLOR_BLUE);
+        draw_string_tracked(76, 104, "A2DP AUDIO SINK", COLOR_WHITE, COLOR_SURFACE_LO);
+        draw_string(76, 130, "Name: TomTom ONE XL", COLOR_GRAY, COLOR_SURFACE_LO);
+        draw_string(76, 150, "PIN: 0000", COLOR_GRAY, COLOR_SURFACE_LO);
+        draw_string(76, 178, "Pair a phone, then play audio.", COLOR_WHITE, COLOR_SURFACE_LO);
+        draw_string(76, 198, "Volume follows the phone.", COLOR_BLUE, COLOR_SURFACE_LO);
     }
 
-    /* Bottom status: volume follows the connected phone via BlueALSA software volume. */
     draw_rect(0, 238, FB_WIDTH, 34, COLOR_TOPBAR);
-    draw_string(10, 246, "A2DP | VOLUME CONTROL: PHONE", COLOR_GRAY, COLOR_TOPBAR);
-
+    draw_icon16(12, 247, ICON_BLUETOOTH, COLOR_BLUE);
+    draw_string(36, 246, "A2DP", COLOR_GRAY, COLOR_TOPBAR);
+    draw_string(270, 246, "VOLUME CONTROL: PHONE", COLOR_WHITE, COLOR_TOPBAR);
     fb_flip();
 }
 
